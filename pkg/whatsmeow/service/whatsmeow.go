@@ -889,6 +889,40 @@ func (mycli *MyClient) teardownQR(reason string, forceLogout bool) {
 	}
 }
 
+// reconnectsInFlight holds the IDs of instances that currently have an
+// event-driven ReconnectClient running. Both the Disconnected path and the
+// KeepAliveTimeout path go through triggerReconnect, so a dying socket that
+// emits both events can never start two client runtimes for one instance.
+var reconnectsInFlight sync.Map
+
+// tryBeginReconnect marks instanceID as reconnecting; it returns false if a
+// reconnect for that instance is already in flight.
+func tryBeginReconnect(instanceID string) bool {
+	_, busy := reconnectsInFlight.LoadOrStore(instanceID, struct{}{})
+	return !busy
+}
+
+func endReconnect(instanceID string) {
+	reconnectsInFlight.Delete(instanceID)
+}
+
+// triggerReconnect restarts the instance in the background via
+// ReconnectClient, unless a restart for the same instance is already running.
+func (mycli *MyClient) triggerReconnect(reason string) {
+	instanceID := mycli.userID
+	if !tryBeginReconnect(instanceID) {
+		mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] %s, but a reconnect is already in flight; skipping", instanceID, reason)
+		return
+	}
+	go func() {
+		defer endReconnect(instanceID)
+		mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] %s, restarting instance", instanceID, reason)
+		if err := mycli.service.ReconnectClient(instanceID); err != nil {
+			mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Failed to restart instance: %v", instanceID, err)
+		}
+	}()
+}
+
 func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	userID := mycli.userID
 	postMap := make(map[string]interface{})
@@ -2037,12 +2071,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// (the case this was written for) without it also firing on every
 		// pairing-phase blip.
 		if mycli.WAClient != nil && mycli.WAClient.Store.ID != nil {
-			go func(instanceID string) {
-				mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] Disconnected detected, restarting instance", instanceID)
-				if err := mycli.service.ReconnectClient(instanceID); err != nil {
-					mycli.loggerWrapper.GetLogger(instanceID).LogError("[%s] Failed to restart instance: %v", instanceID, err)
-				}
-			}(mycli.userID)
+			mycli.triggerReconnect("Disconnected detected")
 		} else if mycli.WAClient != nil {
 			// Still mid-QR-pairing. Not a no-op, though -- a genuinely dropped
 			// socket here (as opposed to the routine cycling handleQRCodes/
@@ -2066,6 +2095,31 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				}
 			}(mycli.userID)
 		}
+	case *events.KeepAliveTimeout:
+		doWebhook = true
+		postMap["event"] = "KeepAliveTimeout"
+		postMap["data"] = map[string]interface{}{
+			"ErrorCount":  evt.ErrorCount,
+			"LastSuccess": evt.LastSuccess,
+		}
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Keepalive ping timed out (%d consecutive, last success: %s)", mycli.userID, evt.ErrorCount, evt.LastSuccess.Format(time.RFC3339))
+
+		// With EnableAutoReconnect disabled, a TCP connection that silently dies
+		// keeps timing out keepalives forever without ever emitting
+		// events.Disconnected — the instance stays "connected" but is a zombie.
+		// whatsmeow's own docs suggest using this event to force a faster
+		// disconnect+reconnect, so after 3 consecutive timeouts restart the
+		// instance through the same path the Disconnected handler uses. Exact
+		// match keeps counts 4, 5, ... from piling up restarts, and
+		// triggerReconnect's in-flight guard keeps this from racing a
+		// Disconnected-driven restart of the same instance.
+		if evt.ErrorCount == 3 && mycli.WAClient != nil && mycli.WAClient.Store.ID != nil {
+			mycli.triggerReconnect("3 consecutive keepalive timeouts")
+		}
+	case *events.KeepAliveRestored:
+		doWebhook = true
+		postMap["event"] = "KeepAliveRestored"
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Keepalive pings restored", mycli.userID)
 	case *events.LabelEdit:
 		doWebhook = true
 		postMap["event"] = "LabelEdit"
@@ -2300,7 +2354,7 @@ func (w *whatsmeowService) CallWebhook(instance *instance_model.Instance, queueN
 			w.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Event received of type %s", instance.Id, eventType)
 			w.sendToQueueOrWebhook(instance, queueName, jsonData)
 		}
-	case "Connected", "PairSuccess", "TemporaryBan", "LoggedOut", "ConnectFailure", "Disconnected":
+	case "Connected", "PairSuccess", "TemporaryBan", "LoggedOut", "ConnectFailure", "Disconnected", "KeepAliveTimeout", "KeepAliveRestored":
 		if contains(subscriptions, "CONNECTION") {
 			w.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Event received of type %s", instance.Id, eventType)
 			w.sendToQueueOrWebhook(instance, queueName, jsonData)
@@ -2588,7 +2642,7 @@ func (w *whatsmeowService) SendToGlobalQueues(eventType string, payload []byte, 
 				globalEventType = "CHAT_PRESENCE"
 			case "CallOffer", "CallAccept", "CallTerminate", "CallOfferNotice", "CallRelayLatency":
 				globalEventType = "CALL"
-			case "Connected", "PairSuccess", "TemporaryBan", "LoggedOut", "ConnectFailure", "Disconnected":
+			case "Connected", "PairSuccess", "TemporaryBan", "LoggedOut", "ConnectFailure", "Disconnected", "KeepAliveTimeout", "KeepAliveRestored":
 				globalEventType = "CONNECTION"
 			case "LabelEdit", "LabelAssociationChat", "LabelAssociationMessage":
 				globalEventType = "LABEL"
@@ -2650,7 +2704,7 @@ func (w *whatsmeowService) SendToGlobalQueues(eventType string, payload []byte, 
 			globalEventType = "CHAT_PRESENCE"
 		case "CallOffer", "CallAccept", "CallTerminate", "CallOfferNotice", "CallRelayLatency":
 			globalEventType = "CALL"
-		case "Connected", "PairSuccess", "TemporaryBan", "LoggedOut", "ConnectFailure", "Disconnected":
+		case "Connected", "PairSuccess", "TemporaryBan", "LoggedOut", "ConnectFailure", "Disconnected", "KeepAliveTimeout", "KeepAliveRestored":
 			globalEventType = "CONNECTION"
 		case "LabelEdit", "LabelAssociationChat", "LabelAssociationMessage":
 			globalEventType = "LABEL"
