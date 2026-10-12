@@ -133,6 +133,10 @@ type MyClient struct {
 	passkeyCeremony    *ceremony.Store
 	appStateRecoveryMu sync.Mutex
 	appStateRecovery   map[appstate.WAPatchName]appStateRecoveryAttempt
+	// presenceStop is closed to stop this client's AlwaysOnline presence
+	// goroutine; nil when none is running. Guarded by presenceMu.
+	presenceMu   sync.Mutex
+	presenceStop chan struct{}
 }
 
 type appStateRecoveryAttempt struct {
@@ -278,6 +282,7 @@ func (w whatsmeowService) ReconnectClient(instanceId string) error {
 
 		// Remover event handler se existir
 		if mycli, ok := w.myClientPointer.Lookup(instanceId); ok {
+			mycli.stopPresenceUpdates()
 			if mycli.eventHandlerID != 0 {
 				client.RemoveEventHandler(mycli.eventHandlerID)
 				w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Event handler removed", instanceId)
@@ -705,6 +710,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 		select {
 		case <-w.killChannel.Get(cd.Instance.Id):
 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Received kill signal for user '%s'", cd.Instance.Id)
+			mycli.stopPresenceUpdates()
 			client.Disconnect()
 
 			w.clientPointer.Delete(cd.Instance.Id)
@@ -763,13 +769,63 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 	}
 }
 
-func schedulePresenceUpdates(mycli *MyClient) {
+// startPresenceUpdates launches the AlwaysOnline presence goroutine for this
+// client unless one is already running. It never touches the instance kill
+// channel, so it cannot steal StartClient's kill signal, and repeated
+// Connected/PushNameSetting events do not pile up goroutines.
+func (mycli *MyClient) startPresenceUpdates() {
+	mycli.presenceMu.Lock()
+	defer mycli.presenceMu.Unlock()
+	if mycli.presenceStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	mycli.presenceStop = stop
+	go schedulePresenceUpdates(mycli, stop)
+}
+
+// stopPresenceUpdates stops this client's presence goroutine, if any.
+func (mycli *MyClient) stopPresenceUpdates() {
+	if mycli == nil {
+		return
+	}
+	mycli.presenceMu.Lock()
+	defer mycli.presenceMu.Unlock()
+	if mycli.presenceStop != nil {
+		close(mycli.presenceStop)
+		mycli.presenceStop = nil
+	}
+}
+
+// presenceUpdatesDone clears the running marker when the goroutine exits on
+// its own, so a later Connected event can start a fresh one.
+func (mycli *MyClient) presenceUpdatesDone(stop chan struct{}) {
+	mycli.presenceMu.Lock()
+	defer mycli.presenceMu.Unlock()
+	if mycli.presenceStop == stop {
+		mycli.presenceStop = nil
+	}
+}
+
+func schedulePresenceUpdates(mycli *MyClient, stop chan struct{}) {
+	defer mycli.presenceUpdatesDone(stop)
 	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+	defer func() { ticker.Stop() }()
 
 	for {
 		select {
 		case <-ticker.C:
+			// This client was replaced (reconnect/restart) or the flag was
+			// turned off: stop instead of driving a stale session.
+			if mycli.myClientPointer != nil && mycli.myClientPointer.Get(mycli.userID) != mycli {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Client replaced, stopping presence updates", mycli.userID)
+				return
+			}
+			if mycli.Instance == nil || !mycli.Instance.AlwaysOnline {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] alwaysOnline disabled, stopping presence updates", mycli.userID)
+				return
+			}
+
 			// Verificar se a instância ainda existe
 			_, err := mycli.instanceRepository.GetInstanceByID(mycli.userID)
 			if err != nil {
@@ -783,9 +839,9 @@ func schedulePresenceUpdates(mycli *MyClient) {
 			randomInterval := time.Duration(1+rand.Intn(3)) * time.Hour
 			ticker = time.NewTicker(randomInterval)
 
-		case <-mycli.killChannel.Get(mycli.userID):
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Received kill signal, stopping presence updates", mycli.userID)
-			return // Encerra a goroutine quando receber sinal de kill
+		case <-stop:
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Stopping presence updates", mycli.userID)
+			return
 		}
 	}
 }
@@ -1109,7 +1165,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			// the user's phone. When alwaysOnline is false we now send Unavailable instead.
 			var err error
 			if mycli.Instance.AlwaysOnline {
-				go schedulePresenceUpdates(mycli)
+				mycli.startPresenceUpdates()
 
 				err = mycli.WAClient.SendPresence(context.Background(), types.PresenceAvailable)
 				if err != nil {
@@ -1118,6 +1174,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Marked self as available", mycli.userID)
 				}
 			} else {
+				mycli.stopPresenceUpdates()
 				err = mycli.WAClient.SendPresence(context.Background(), types.PresenceUnavailable)
 				if err != nil {
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Failed to send unavailable presence %v", mycli.userID, err)
@@ -3064,7 +3121,8 @@ func (w whatsmeowService) ClearInstanceCache(instanceId string, token string) er
 	w.userInfoCache.Delete(token)
 
 	// Limpar myClientPointer se existir
-	if _, exists := w.myClientPointer.Lookup(instanceId); exists {
+	if mycli, exists := w.myClientPointer.Lookup(instanceId); exists {
+		mycli.stopPresenceUpdates()
 		w.myClientPointer.Delete(instanceId)
 		w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] MyClient pointer cleared", instanceId)
 	}
