@@ -312,6 +312,27 @@ func (i instances) Reconnect(instance *instance_model.Instance) error {
 	return i.whatsmeowService.ReconnectClient(instance.Id)
 }
 
+// killSignalTimeout bounds how long an HTTP request waits for the instance's
+// StartClient loop to take a kill signal.
+const killSignalTimeout = 5 * time.Second
+
+// sendKillSignal delivers a kill signal without ever blocking forever: a nil
+// channel (instance has no runtime loop) is skipped, and the send gives up
+// after timeout. It reports whether the signal was delivered.
+func sendKillSignal(ch chan bool, timeout time.Duration) bool {
+	if ch == nil {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case ch <- true:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func (i instances) Disconnect(instance *instance_model.Instance) (*instance_model.Instance, error) {
 	client, err := i.ensureClientConnected(instance.Id)
 	if err != nil {
@@ -321,7 +342,12 @@ func (i instances) Disconnect(instance *instance_model.Instance) (*instance_mode
 	if client.IsConnected() {
 		if client.IsLoggedIn() {
 			i.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Disconnection successful", instance.Id)
-			i.killChannel.Get(instance.Id) <- true
+			if !sendKillSignal(i.killChannel.Get(instance.Id), killSignalTimeout) {
+				// No runtime loop took the signal (missing channel or stuck
+				// loop): disconnect directly instead of hanging the request.
+				i.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Kill signal not delivered; disconnecting client directly", instance.Id)
+				client.Disconnect()
+			}
 
 			// Do not clear instance.Events on disconnect. Wiping subscriptions
 			// leaves the instance "connected" after reconnect with an empty
@@ -359,10 +385,7 @@ func (i instances) Logout(instance *instance_model.Instance) (*instance_model.In
 			return instance, err
 		}
 
-		select {
-		case i.killChannel.Get(instance.Id) <- true:
-		case <-time.After(5 * time.Second):
-		}
+		sendKillSignal(i.killChannel.Get(instance.Id), killSignalTimeout)
 
 		i.clientPointer.Delete(instance.Id)
 		i.killChannel.Delete(instance.Id)
@@ -374,10 +397,7 @@ func (i instances) Logout(instance *instance_model.Instance) (*instance_model.In
 	if client.IsConnected() {
 		client.Disconnect()
 
-		select {
-		case i.killChannel.Get(instance.Id) <- true:
-		case <-time.After(5 * time.Second):
-		}
+		sendKillSignal(i.killChannel.Get(instance.Id), killSignalTimeout)
 
 		i.clientPointer.Delete(instance.Id)
 		i.killChannel.Delete(instance.Id)
@@ -754,10 +774,7 @@ func (i instances) ForceReconnect(instanceId string, number string) error {
 		client := i.clientPointer.Get(instance.Id)
 		client.Disconnect()
 
-		select {
-		case i.killChannel.Get(instance.Id) <- true:
-		case <-time.After(5 * time.Second):
-		}
+		sendKillSignal(i.killChannel.Get(instance.Id), killSignalTimeout)
 
 		i.clientPointer.Delete(instance.Id)
 		i.killChannel.Delete(instance.Id)

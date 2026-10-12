@@ -2196,8 +2196,13 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			}
 		}
 
-		// Agora mata o canal DEPOIS de enviar o evento
-		mycli.killChannel.Get(mycli.userID) <- true
+		// Agora mata o canal DEPOIS de enviar o evento. A nil channel would
+		// block this event handler forever, so skip it when absent.
+		if killChan := mycli.killChannel.Get(mycli.userID); killChan != nil {
+			killChan <- true
+		} else {
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] No kill channel for instance; skipping kill signal", mycli.userID)
+		}
 	case *events.ChatPresence:
 		doWebhook = true
 		postMap["event"] = "ChatPresence"
