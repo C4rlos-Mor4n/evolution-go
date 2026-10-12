@@ -1016,6 +1016,17 @@ func (mycli *MyClient) triggerReconnect(reason string) {
 	}()
 }
 
+// isOwnAccountJID reports whether jid is this account itself (phone-number or
+// LID form), ignoring the device/agent part.
+func isOwnAccountJID(jid, ownPN, ownLID types.JID) bool {
+	if jid.IsEmpty() {
+		return false
+	}
+	nonAD := jid.ToNonAD()
+	return (!ownPN.IsEmpty() && nonAD == ownPN.ToNonAD()) ||
+		(!ownLID.IsEmpty() && nonAD == ownLID.ToNonAD())
+}
+
 func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	userID := mycli.userID
 	postMap := make(map[string]interface{})
@@ -1411,6 +1422,29 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			}
 		}
 
+		// Trata mensagens enviadas em multi-device (celular primário / WhatsApp Web)
+		// O whatsmeow preenche evt.Info.Chat como o próprio número da empresa e armazena o lead de destino
+		// em evt.Info.DeviceSentMeta.DestinationJID.
+		// Only reroute when Chat is our own account (PN or LID, any device):
+		// whenever whatsmeow already resolved the real chat, leave it alone.
+		var validDestJID *types.JID
+		chatRerouted := false
+		if evt.Info.IsFromMe && evt.Info.DeviceSentMeta != nil && evt.Info.DeviceSentMeta.DestinationJID != "" {
+			if destJID, err := types.ParseJID(evt.Info.DeviceSentMeta.DestinationJID); err == nil && !destJID.IsEmpty() {
+				validDestJID = &destJID
+				if !evt.Info.IsGroup && mycli.WAClient != nil && mycli.WAClient.Store != nil &&
+					isOwnAccountJID(evt.Info.Chat, mycli.WAClient.Store.GetJID(), mycli.WAClient.Store.GetLID()) {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Outbound multi-device message detected - routing Chat from %s to DestinationJID %s",
+						mycli.userID, evt.Info.Chat.String(), destJID.String())
+					evt.Info.Chat = destJID
+					chatRerouted = true
+				}
+			} else if err != nil {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Failed to parse DestinationJID '%s': %v",
+					mycli.userID, evt.Info.DeviceSentMeta.DestinationJID, err)
+			}
+		}
+
 		// Auto-marca mensagens como lidas se configurado
 		if mycli.Instance.ReadMessages && !evt.Info.IsFromMe {
 			go func() {
@@ -1459,6 +1493,16 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		}
 
 		annotateMessageAction(dataMap, evt, decryptFailed)
+
+		if validDestJID != nil {
+			// Expose the real destination of an outbound message sent from a
+			// linked device (also for groups, where Chat is already the group).
+			destStr := validDestJID.String()
+			dataMap["Recipient"] = destStr
+			if chatRerouted {
+				dataMap["Chat"] = destStr
+			}
+		}
 
 		referral := extractReferralFromMessage(evt.Message)
 
