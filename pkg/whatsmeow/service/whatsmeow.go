@@ -764,6 +764,21 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 			w.StartClient(cd)
 			return
 		default:
+			// This loop re-reads the instance's kill channel on every pass, so
+			// once another StartClient has replaced (or ReconnectClient has
+			// removed) this runtime's client, a stale loop would otherwise keep
+			// running and could take a kill signal meant for the new runtime
+			// and restart a second client. Exit instead, closing our own
+			// client if it is somehow still connected.
+			if w.clientPointer.Get(cd.Instance.Id) != client {
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Client runtime superseded, stopping its loop", cd.Instance.Id)
+				mycli.stopPresenceUpdates()
+				client.RemoveEventHandler(mycli.eventHandlerID)
+				if client.IsConnected() {
+					client.Disconnect()
+				}
+				return
+			}
 			time.Sleep(1000 * time.Millisecond)
 		}
 	}
