@@ -111,10 +111,16 @@ Build derivada, **no es una release oficial upstream**.
    - En mensajes enviados desde el teléfono, `Info.Chat` es el destino real (puede ser `@lid`).
 7. `POST /user/lid` es nuevo.
 
+## Mejoras posteriores (después de la rc1)
+
+| Cambio | Detalle |
+|---|---|
+| Pool del auth DB configurable | `POSTGRES_AUTH_MAX_OPEN_CONNS` (por defecto 20) y `POSTGRES_AUTH_MAX_IDLE_CONNS` (por defecto 5). Un solo pool sirve a todas las instancias. |
+| Arranque acotado | `POSTGRES_AUTH_INIT_TIMEOUT` (segundos, por defecto 30): el Ping y el Upgrade del container tienen timeout. Si Postgres no responde, falla rápido y el siguiente connect reintenta. |
+| Carrera de dos `connect` simultáneos | Cada runtime tiene su propio canal de kill y el setup de `StartClient` se serializa por instancia. Un runtime obsoleto reenvía el kill en vez de desarmar el runtime vivo. |
+
 ## Pendiente / conocido
 
-- El cap del pool de #117 está fijo en 20 conexiones y el `Upgrade` del container no tiene timeout. Funciona, pero si Postgres no responde al arrancar, los `StartClient` quedan esperando.
-- El loop de StartClient todavía relee el canal de kill en cada vuelta. El guard de "superseded" lo hace converger, pero puede haber sockets duplicados transitorios si dos `connect` se pisan.
 - **QA real pendiente:**
   - Emparejamiento por QR y por pairing code.
   - Reconexión tras cortar la red.
