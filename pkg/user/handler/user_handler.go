@@ -570,7 +570,8 @@ func (u *userHandler) ResolveLid(ctx *gin.Context) {
 		return
 	}
 
-	if data.Lid == "" {
+	// A literal `null` body binds without error and leaves data nil
+	if data == nil || data.Lid == "" {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "lid is required"})
 		return
 	}

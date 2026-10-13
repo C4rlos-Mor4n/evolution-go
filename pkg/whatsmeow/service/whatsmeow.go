@@ -779,6 +779,17 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 				}
 				return
 			}
+			// Two concurrent StartClient calls can interleave their clientPointer/myClientPointer
+			// writes and leave myClientPointer on the loser's (dead) MyClient. The live runtime re-asserts
+			// its own MyClient so settings updates and AlwaysOnline target the session actually running.
+			if w.myClientPointer.Get(cd.Instance.Id) != mycli {
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogWarn("[%s] Re-asserting MyClient pointer for the live runtime", cd.Instance.Id)
+				w.myClientPointer.Set(cd.Instance.Id, mycli)
+				// The instance may have been removed/replaced between the check and the Set: undo it then.
+				if w.clientPointer.Get(cd.Instance.Id) != client && w.myClientPointer.Get(cd.Instance.Id) == mycli {
+					w.myClientPointer.Delete(cd.Instance.Id)
+				}
+			}
 			time.Sleep(1000 * time.Millisecond)
 		}
 	}
@@ -1049,7 +1060,28 @@ func (mycli *MyClient) teardownQR(reason string, forceLogout bool) {
 	// the original timeout branch so the signal is never dropped.
 	mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] QR timeout — signaling kill channel", instanceID)
 	if killChan, exists := mycli.killChannel.Lookup(instanceID); exists {
-		killChan <- true
+		if !deliverKillSignal(killChan, qrKillSignalTimeout) {
+			mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] QR timeout kill signal not taken (runtime already gone?)", instanceID)
+		}
+	}
+}
+
+// qrKillSignalTimeout bounds the QR-timeout / logout kill signal so a runtime loop that already exited
+// can never leave this goroutine (or the event handler) blocked forever.
+const qrKillSignalTimeout = 30 * time.Second
+
+// deliverKillSignal sends on a kill channel, giving up after timeout. Nil channels are skipped.
+func deliverKillSignal(ch chan bool, timeout time.Duration) bool {
+	if ch == nil {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case ch <- true:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -2214,7 +2246,9 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// Agora mata o canal DEPOIS de enviar o evento. A nil channel would
 		// block this event handler forever, so skip it when absent.
 		if killChan := mycli.killChannel.Get(mycli.userID); killChan != nil {
-			killChan <- true
+			if !deliverKillSignal(killChan, qrKillSignalTimeout) {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] LoggedOut kill signal not taken (runtime already gone?)", mycli.userID)
+			}
 		} else {
 			mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] No kill channel for instance; skipping kill signal", mycli.userID)
 		}
@@ -2319,29 +2353,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// pairing-phase blip.
 		if mycli.WAClient != nil && mycli.WAClient.Store.ID != nil {
 			mycli.triggerReconnect("Disconnected detected")
-		} else if mycli.WAClient != nil {
-			// Still mid-QR-pairing. Not a no-op, though -- a genuinely dropped
-			// socket here (as opposed to the routine cycling handleQRCodes/
-			// teardownQR above already tolerates) would otherwise sit dead
-			// until the QR-max-count timeout eventually forces a restart, up
-			// to ~140s away. Reconnect the SAME client/session in place --
-			// same recovery idiom StartClient's own EOF-retry branch already
-			// uses (WAClient.Connect() again on an already-initialized
-			// client) -- rather than ReconnectClient()'s teardown-and-mint-
-			// a-new-device-identity path. This touches no shared instance
-			// maps or qrcodeCount, so it can't reintroduce the race this fix
-			// removed above.
-			go func(instanceID string) {
-				if mycli.WAClient.IsConnected() {
-					return // already recovered by the time this goroutine ran
-				}
-				if err := mycli.WAClient.Connect(); err != nil {
-					mycli.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] Reconnect attempt during QR pairing failed: %v", instanceID, err)
-				} else {
-					mycli.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] Reconnected during QR pairing (same session, no device reset)", instanceID)
-				}
-			}(mycli.userID)
 		}
+		// While still mid-QR-pairing (Store.ID nil) nothing is done here: handleQRCodes/teardownQR own the
+		// restart lifecycle. The upstream #192 in-place WAClient.Connect() was removed (Krionix review): it
+		// made the server emit a new QR and started a second rotation goroutine without stopping the first
+		// one (stale codes, racy qrcodeCount, and a second kill that could take down the fresh runtime).
 	case *events.KeepAliveTimeout:
 		doWebhook = true
 		postMap["event"] = "KeepAliveTimeout"
@@ -2356,11 +2372,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		// events.Disconnected — the instance stays "connected" but is a zombie.
 		// whatsmeow's own docs suggest using this event to force a faster
 		// disconnect+reconnect, so after 3 consecutive timeouts restart the
-		// instance through the same path the Disconnected handler uses. Exact
-		// match keeps counts 4, 5, ... from piling up restarts, and
-		// triggerReconnect's in-flight guard keeps this from racing a
-		// Disconnected-driven restart of the same instance.
-		if evt.ErrorCount == 3 && mycli.WAClient != nil && mycli.WAClient.Store.ID != nil {
+		// instance through the same path the Disconnected handler uses. Counts
+		// above 3 retry if the previous restart failed; triggerReconnect's
+		// in-flight guard keeps them (and a Disconnected-driven restart of the
+		// same instance) from piling up concurrent restarts.
+		if evt.ErrorCount >= 3 && mycli.WAClient != nil && mycli.WAClient.Store.ID != nil {
 			mycli.triggerReconnect("3 consecutive keepalive timeouts")
 		}
 	case *events.KeepAliveRestored:
