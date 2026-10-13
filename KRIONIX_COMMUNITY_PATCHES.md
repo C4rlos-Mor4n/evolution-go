@@ -8,7 +8,19 @@ Build derivada, **no es una release oficial upstream**.
   - `krionix/community-0.7.2-whatsmeow`: lo anterior **+ #190** (whatsmeow 20260904, Go 1.26). Está separado porque toca la capa de protocolo de todos los tenants: conviene probarlo primero en una o dos instancias (canary).
 - Imágenes candidatas (locales, no publicadas): `evolution-go-krionix:0.7.2-community.1-rc1` y `evolution-go-krionix:0.7.2-community.1-whatsmeow-rc1`.
 - Revisión: triage de los 64 PRs abiertos de upstream; revisión independiente del diff final (sus hallazgos están corregidos).
-- Sobre la imagen de producción `0.7.2-stability-rc1`: no está claro de qué código salió. El binario no trae metadatos de VCS, la imagen no tiene labels y el código no está en el fork. Usa el mismo whatsmeow que 0.7.2. Esta rama es una base reproducible y trazable para reemplazarla.
+- Comparación con la imagen de producción `c4rlosmor4n/evolution-go-krionix:0.7.2-stability-rc1@sha256:2733bc13…`:
+  - Su código no está en el fork y el binario no trae metadatos de VCS. Por eso comparé los símbolos de funciones (`go tool nm`) de su binario contra upstream 0.7.2 y contra esta rama.
+  - Resultado: **rc1 = upstream 0.7.2 + #117 + #136 + #137 + escrituras serializadas en el websocket + un `ClientMapsMu` global sobre los mapas compartidos**. Usa el mismo whatsmeow y no quita ninguna función de upstream.
+
+  | Arreglo en rc1 | Símbolos en rc1 | En esta rama |
+  |---|---|---|
+  | #117, container de sqlstore compartido | `sharedAuthContainer`, `getAuthContainer` | ✅ los mismos símbolos |
+  | #136, settings parciales y scope de instancia | `applyConnectSettings`, `UpdateConnectSettings`, `buildAdvancedSettingsUpdates` | ✅ los mismos símbolos |
+  | #137, menciones | `setMessageMentionedJIDs`, `participantMentionJID` | ✅ los mismos símbolos |
+  | Escrituras serializadas en el websocket | `wsConn.writeJSON` | ✅ ampliado con #181: mutex por cliente, write deadline y varios suscriptores |
+  | Mutex de mapas | `ClientMapsMu` (un RWMutex global) | ✅ ampliado con #196: `safemap` tipado, que el compilador obliga a usar en cada acceso |
+
+  Reemplazar rc1 por esta rama **no pierde ningún arreglo** y suma 18 PRs más y 5 arreglos propios.
 
 ## Estabilidad y concurrencia
 
