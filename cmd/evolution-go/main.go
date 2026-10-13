@@ -86,6 +86,13 @@ func init() {
 func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string, runtimeCtx *core.RuntimeContext) *gin.Engine {
 	killChannel := safemap.New[chan bool]()
 	clientPointer := safemap.New[*whatsmeow.Client]()
+	// Inbound call registry (CALLS_ENABLED). Always allocated (it is empty and
+	// inert when calls are disabled); the janitor only runs when enabled.
+	callRegistry := whatsmeow_service.NewCallRegistry()
+	if config.CallsEnabled {
+		logger.LogWarn("CALLS_ENABLED=true: inbound call answering/streaming via the unofficial meowcaller client is ON")
+		go whatsmeow_service.RunCallJanitor(context.Background(), callRegistry, time.Minute)
+	}
 
 	loggerWrapper := logger_wrapper.NewLoggerManager(config)
 
@@ -178,6 +185,7 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 		exPath,
 		mediaStorage,
 		natsProducer,
+		callRegistry,
 		loggerWrapper,
 	)
 	instanceService := instance_service.NewInstanceService(
@@ -193,7 +201,7 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 	messageService := message_service.NewMessageService(clientPointer, messageRepository, whatsmeowService, loggerWrapper)
 	chatService := chat_service.NewChatService(clientPointer, whatsmeowService, loggerWrapper)
 	groupService := group_service.NewGroupService(clientPointer, whatsmeowService, loggerWrapper)
-	callService := call_service.NewCallService(clientPointer, whatsmeowService, loggerWrapper)
+	callService := call_service.NewCallService(clientPointer, whatsmeowService, callRegistry, config.CallsEnabled, loggerWrapper)
 	communityService := community_service.NewCommunityService(clientPointer, whatsmeowService, loggerWrapper)
 	labelService := label_service.NewLabelService(clientPointer, whatsmeowService, labelRepository, loggerWrapper)
 	newsletterService := newsletter_service.NewNewsletterService(clientPointer, whatsmeowService, loggerWrapper)

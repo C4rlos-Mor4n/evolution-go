@@ -98,6 +98,9 @@ type whatsmeowService struct {
 	natsProducer       producer_interfaces.Producer
 	loggerWrapper      *logger_wrapper.LoggerManager
 	passkeyCeremony    *ceremony.Store
+	// callRegistry holds the inbound calls captured by meowcaller (only used
+	// with CALLS_ENABLED=true).
+	callRegistry *CallRegistry
 }
 
 type MyClient struct {
@@ -593,6 +596,12 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	w.clientPointer.Set(cd.Instance.Id, client)
 
+	// CALLS_ENABLED: meowcaller must be constructed before client.Connect(). The
+	// release closes this runtime's calls/streams; it runs on every exit path
+	// (explicitly before Disconnect below, and deferred for early returns).
+	releaseCalls := w.attachCalling(cd.Instance.Id, client)
+	defer releaseCalls()
+
 	if cd.IsProxy {
 		var proxyConfig ProxyConfig
 		err := json.Unmarshal([]byte(cd.Instance.Proxy), &proxyConfig)
@@ -764,6 +773,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 				// Stale runtime (replaced while the channel was shared): the signal belongs to the
 				// registered runtime, so hand it over instead of tearing down that runtime's state.
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Kill signal reached a superseded runtime; forwarding it", cd.Instance.Id)
+				releaseCalls()
 				mycli.stopPresenceUpdates()
 				client.RemoveEventHandler(mycli.eventHandlerID)
 				if client.IsConnected() {
@@ -773,6 +783,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 				return
 			}
 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Received kill signal for user '%s'", cd.Instance.Id)
+			releaseCalls()
 			mycli.stopPresenceUpdates()
 			client.Disconnect()
 
@@ -835,6 +846,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 			// a kill signal meant for the new runtime.
 			if w.clientPointer.Get(cd.Instance.Id) != client {
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Client runtime superseded, stopping its loop", cd.Instance.Id)
+				releaseCalls()
 				mycli.stopPresenceUpdates()
 				client.RemoveEventHandler(mycli.eventHandlerID)
 				if client.IsConnected() {
@@ -2353,23 +2365,28 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			return
 		}
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
 	case *events.CallAccept:
 		doWebhook = true
 		postMap["event"] = "CallAccept"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call accept %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call accept callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
 	case *events.CallTerminate:
 		doWebhook = true
 		postMap["event"] = "CallTerminate"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call terminate %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call terminate callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
+		// meowcaller's own end callback normally removed it already; this is the
+		// belt-and-braces removal, scoped to this instance only.
+		if svc, ok := mycli.service.(*whatsmeowService); ok && svc.callRegistry != nil {
+			svc.callRegistry.Remove(mycli.userID, evt.CallID, "terminated")
+		}
 	case *events.CallOfferNotice:
 		doWebhook = true
 		postMap["event"] = "CallOfferNotice"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer notice %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer notice callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
 	case *events.CallRelayLatency:
 		doWebhook = true
 		postMap["event"] = "CallRelayLatency"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call relay latency %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call relay latency callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
 	case *events.OfflineSyncCompleted:
 		doWebhook = true
 		postMap["event"] = "OfflineSyncCompleted"
@@ -3274,6 +3291,7 @@ func NewWhatsmeowService(
 	exPath string,
 	mediaStorage storage_interfaces.MediaStorage,
 	natsProducer producer_interfaces.Producer,
+	callRegistry *CallRegistry,
 	loggerWrapper *logger_wrapper.LoggerManager,
 ) WhatsmeowService {
 	// Inicializar PollService de forma segura
@@ -3300,6 +3318,7 @@ func NewWhatsmeowService(
 		natsProducer:       natsProducer,
 		loggerWrapper:      loggerWrapper,
 		passkeyCeremony:    ceremony.NewStore(),
+		callRegistry:       callRegistry,
 	}
 }
 

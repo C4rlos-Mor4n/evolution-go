@@ -195,6 +195,17 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 		routes.Use(r.authMiddleware.Auth)
 		{
 			routes.POST("/reject", r.jidValidationMiddleware.ValidateNumberField(), r.callHandler.RejectCall)
+			routes.POST("/answer", r.callHandler.AnswerCall)
+			routes.POST("/hangup", r.callHandler.HangupCall)
+		}
+	}
+	// The call media WebSocket accepts the instance token as header or query
+	// parameter (browsers cannot set headers on a WebSocket upgrade).
+	routes = eng.Group("/call/stream")
+	{
+		routes.Use(r.authMiddleware.AuthHeaderOrQuery)
+		{
+			routes.GET("/:callId", r.callHandler.StreamCall)
 		}
 	}
 	routes = eng.Group("/community")

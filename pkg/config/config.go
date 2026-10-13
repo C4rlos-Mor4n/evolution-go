@@ -31,6 +31,9 @@ type Config struct {
 	WebhookFiles         bool
 	ConnectOnStartup     bool
 	RerequestFromPhone   bool
+	// CallsEnabled turns on answering/streaming WhatsApp calls through the
+	// unofficial meowcaller library (CALLS_ENABLED, default false).
+	CallsEnabled         bool
 	OsName               string
 	AmqpUrl              string
 	AmqpGlobalEnabled    bool
@@ -287,6 +290,7 @@ func Load() *Config {
 	}
 
 	rerequestFromPhone := os.Getenv(config_env.REREQUEST_FROM_PHONE)
+	callsEnabled := os.Getenv(config_env.CALLS_ENABLED)
 
 	// Convertendo para int com valores padrão caso estejam vazios
 	major := 0
@@ -398,6 +402,7 @@ func Load() *Config {
 		AuthDBInitTimeout:    time.Duration(authInitTimeoutSec) * time.Second,
 		CheckUserExists:      checkUserExists != "false", // Default true, set to false to disable
 		RerequestFromPhone:   rerequestFromPhone == "true",
+		CallsEnabled:         callsEnabled == "true",
 		AmqpGlobalEvents:     amqpGlobalEvents,
 		AmqpSpecificEvents:   amqpSpecificEvents,
 		NatsUrl:              natsUrl,
