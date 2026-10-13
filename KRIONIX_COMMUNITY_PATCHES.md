@@ -119,6 +119,10 @@ Build derivada, **no es una release oficial upstream**.
 | Arranque acotado | `POSTGRES_AUTH_INIT_TIMEOUT` (segundos, por defecto 30): el Ping y el Upgrade del container tienen timeout. Si Postgres no responde, falla rápido y el siguiente connect reintenta. |
 | Carrera de dos `connect` simultáneos | Cada runtime tiene su propio canal de kill y el setup de `StartClient` se serializa por instancia. Un runtime obsoleto reenvía el kill en vez de desarmar el runtime vivo. |
 
+Imágenes con estas mejoras (rc2, Docker Hub, públicas, linux/amd64):
+- `docker.io/c4rlosmor4n/evolution-go-krionix:0.7.2-community.1-rc2@sha256:57b167fd916484fe2cb1b2a9a5a32ad376ab7ff4737a974fe69d184c43858ebc` (tag git `0.7.2-community.1-rc2` → `fc33cef`)
+- `docker.io/c4rlosmor4n/evolution-go-krionix:0.7.2-community.1-whatsmeow-rc2@sha256:944332690e879caaf5d178869283a020a1c6ea7d16533cee1560fb69d63a024f` (tag git `0.7.2-community.1-whatsmeow-rc2` → `531d4d5`)
+
 ## Pendiente / conocido
 
 - **QA real pendiente:**
