@@ -245,6 +245,23 @@ type ClientData struct {
 	Subscriptions []string
 	Phone         string
 	IsProxy       bool
+	// KillChan is this runtime's own kill channel. StartClient publishes it in killChannel together
+	// with clientPointer/myClientPointer, so a kill always reaches the runtime that is registered.
+	KillChan chan bool
+}
+
+// startLocks serializes the setup phase of StartClient per instance (from the "already connected"
+// check until the runtime is registered). Without it two concurrent /instance/connect calls could
+// interleave their clientPointer/myClientPointer/killChannel writes and share a kill channel, so the
+// losing runtime could consume a kill meant for the live one and start a third socket.
+var startLocks sync.Map // instanceID -> *sync.Mutex
+
+func lockInstanceStart(instanceID string) func() {
+	mu, _ := startLocks.LoadOrStore(instanceID, &sync.Mutex{})
+	m := mu.(*sync.Mutex)
+	m.Lock()
+	var once sync.Once
+	return func() { once.Do(m.Unlock) }
 }
 
 type Values struct {
@@ -475,6 +492,15 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Starting websocket connection to Whatsapp for user '%s'", cd.Instance.Id)
 
+	unlockStart := lockInstanceStart(cd.Instance.Id)
+	defer unlockStart()
+
+	killCh := cd.KillChan
+	if killCh == nil {
+		killCh = make(chan bool)
+		cd.KillChan = killCh
+	}
+
 	var deviceStore *store.Device
 	var err error
 
@@ -656,6 +682,10 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	// Armazena o MyClient no map para permitir atualizações posteriores
 	w.myClientPointer.Set(cd.Instance.Id, mycli)
+	// Register this runtime's kill channel with its client (still under the start lock), then let
+	// other StartClient calls for this instance proceed.
+	w.killChannel.Set(cd.Instance.Id, killCh)
+	unlockStart()
 
 	if client.Store.ID != nil {
 		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Already logged in with JID: %s", cd.Instance.Id, client.Store.ID.String())
@@ -729,7 +759,19 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	for {
 		select {
-		case <-w.killChannel.Get(cd.Instance.Id):
+		case <-killCh:
+			if w.clientPointer.Get(cd.Instance.Id) != client {
+				// Stale runtime (replaced while the channel was shared): the signal belongs to the
+				// registered runtime, so hand it over instead of tearing down that runtime's state.
+				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Kill signal reached a superseded runtime; forwarding it", cd.Instance.Id)
+				mycli.stopPresenceUpdates()
+				client.RemoveEventHandler(mycli.eventHandlerID)
+				if client.IsConnected() {
+					client.Disconnect()
+				}
+				go deliverKillSignal(killCh, qrKillSignalTimeout)
+				return
+			}
 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("Received kill signal for user '%s'", cd.Instance.Id)
 			mycli.stopPresenceUpdates()
 			client.Disconnect()
@@ -780,17 +822,17 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 				go mycli.service.SendToGlobalQueues(postMap["event"].(string), values, mycli.userID)
 			}
 
-			// restart client
+			// restart client with a fresh kill channel of its own
 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Restarting client", cd.Instance.Id)
+			cd.KillChan = make(chan bool)
 			w.StartClient(cd)
 			return
 		default:
-			// This loop re-reads the instance's kill channel on every pass, so
-			// once another StartClient has replaced (or ReconnectClient has
-			// removed) this runtime's client, a stale loop would otherwise keep
-			// running and could take a kill signal meant for the new runtime
-			// and restart a second client. Exit instead, closing our own
-			// client if it is somehow still connected.
+			// Once another StartClient has replaced (or ReconnectClient has
+			// removed) this runtime's client, this loop is stale: exit instead,
+			// closing our own client if it is somehow still connected. Each
+			// runtime listens on its own kill channel, so it can no longer take
+			// a kill signal meant for the new runtime.
 			if w.clientPointer.Get(cd.Instance.Id) != client {
 				w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Client runtime superseded, stopping its loop", cd.Instance.Id)
 				mycli.stopPresenceUpdates()
@@ -810,6 +852,11 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 				if w.clientPointer.Get(cd.Instance.Id) != client && w.myClientPointer.Get(cd.Instance.Id) == mycli {
 					w.myClientPointer.Delete(cd.Instance.Id)
 				}
+			}
+			// A /instance/connect that found this runtime already connected published a new kill
+			// channel without starting a runtime for it: adopt it so later kills still reach us.
+			if cur := w.killChannel.Get(cd.Instance.Id); cur != nil && cur != killCh {
+				killCh = cur
 			}
 			time.Sleep(1000 * time.Millisecond)
 		}
@@ -2801,9 +2848,11 @@ func (w whatsmeowService) StartInstance(instanceId string) error {
 		}
 	}
 
-	w.killChannel.Set(instance.Id, make(chan bool))
+	killCh := make(chan bool)
+	w.killChannel.Set(instance.Id, killCh)
 
 	clientData := &ClientData{
+		KillChan:      killCh,
 		Instance:      instance,
 		Subscriptions: subscribedEvents,
 		Phone:         "",
