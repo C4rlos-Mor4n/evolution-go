@@ -433,16 +433,37 @@ func (w whatsmeowService) getAuthContainer() (*sqlstore.Container, error) {
 		return nil, fmt.Errorf("failed to open auth database: %w", err)
 	}
 	if dialect == "postgres" {
-		db.SetMaxOpenConns(20)
-		db.SetMaxIdleConns(5)
+		maxOpen, maxIdle := w.config.AuthDBMaxOpenConns, w.config.AuthDBMaxIdleConns
+		if maxOpen <= 0 {
+			maxOpen = 20
+		}
+		if maxIdle <= 0 || maxIdle > maxOpen {
+			maxIdle = min(5, maxOpen)
+		}
+		db.SetMaxOpenConns(maxOpen)
+		db.SetMaxIdleConns(maxIdle)
 		db.SetConnMaxLifetime(5 * time.Minute)
 		db.SetConnMaxIdleTime(2 * time.Minute)
 	}
 	// SQLite: intentionally no SetMaxOpenConns(1). whatsmeow can hold a
 	// transaction while issuing another query on the same store; a single
 	// connection would deadlock. WAL + busy_timeout handle concurrency.
+
+	// Bound the first connection and schema upgrade: they run while holding
+	// sharedAuthContainerMu, so an unreachable Postgres must fail fast (the next
+	// StartClient retries) instead of queueing every instance behind it.
+	initTimeout := w.config.AuthDBInitTimeout
+	if initTimeout <= 0 {
+		initTimeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to reach auth database within %s: %w", initTimeout, err)
+	}
 	container := sqlstore.NewWithDB(db, dialect, dbLog)
-	if err := container.Upgrade(context.Background()); err != nil {
+	if err := container.Upgrade(ctx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to upgrade auth database: %w", err)
 	}

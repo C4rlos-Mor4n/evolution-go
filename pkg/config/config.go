@@ -63,6 +63,11 @@ type Config struct {
 	QrcodeMaxCount       int
 	CheckUserExists      bool
 
+	// Auth (whatsmeow store) database pool, shared by every instance
+	AuthDBMaxOpenConns int
+	AuthDBMaxIdleConns int
+	AuthDBInitTimeout  time.Duration
+
 	// Logger configurations
 	LogMaxSize    int
 	LogMaxBackups int
@@ -297,6 +302,17 @@ func Load() *Config {
 		patch, _ = strconv.Atoi(whatsappVersionPatch)
 	}
 
+	// Pool of the shared whatsmeow auth store (POSTGRES_AUTH_DB). One pool serves every instance, so
+	// size it for the number of connected numbers; keep it below Postgres max_connections.
+	authMaxOpen := envPositiveInt(os.Getenv(config_env.POSTGRES_AUTH_MAX_OPEN_CONNS), 20)
+	authMaxIdle := envPositiveInt(os.Getenv(config_env.POSTGRES_AUTH_MAX_IDLE_CONNS), 5)
+	if authMaxIdle > authMaxOpen {
+		authMaxIdle = authMaxOpen
+	}
+	// Bounds the first connection + schema upgrade so an unreachable Postgres at boot fails fast
+	// (and is retried by the next StartClient) instead of queueing every instance forever.
+	authInitTimeoutSec := envPositiveInt(os.Getenv(config_env.POSTGRES_AUTH_INIT_TIMEOUT), 30)
+
 	qrMaxCount := 5 // Valor padrão
 	if qrcodeMaxCount != "" {
 		qrMaxCount, _ = strconv.Atoi(qrcodeMaxCount)
@@ -377,6 +393,9 @@ func Load() *Config {
 		EventIgnoreGroup:     eventIgnoreGroup == "true",
 		EventIgnoreStatus:    eventIgnoreStatus == "true",
 		QrcodeMaxCount:       qrMaxCount,
+		AuthDBMaxOpenConns:   authMaxOpen,
+		AuthDBMaxIdleConns:   authMaxIdle,
+		AuthDBInitTimeout:    time.Duration(authInitTimeoutSec) * time.Second,
 		CheckUserExists:      checkUserExists != "false", // Default true, set to false to disable
 		RerequestFromPhone:   rerequestFromPhone == "true",
 		AmqpGlobalEvents:     amqpGlobalEvents,
@@ -458,4 +477,13 @@ func validateAMQPURL(amqpURL string) error {
 
 	logger.LogInfo("[CONFIG] AMQP URL validation successful: %s://%s", parsedURL.Scheme, parsedURL.Host)
 	return nil
+}
+
+// envPositiveInt parses a positive integer setting, falling back to def when empty or invalid.
+func envPositiveInt(value string, def int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
