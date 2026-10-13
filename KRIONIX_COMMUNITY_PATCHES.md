@@ -6,7 +6,11 @@ Build derivada, **no es una release oficial upstream**.
 - Ramas:
   - `krionix/community-0.7.2`: 23 PRs de la comunidad más 5 commits propios (`fix(krionix)`).
   - `krionix/community-0.7.2-whatsmeow`: lo anterior **+ #190** (whatsmeow 20260904, Go 1.26). Está separado porque toca la capa de protocolo de todos los tenants: conviene probarlo primero en una o dos instancias (canary).
-- Imágenes candidatas (locales, no publicadas): `evolution-go-krionix:0.7.2-community.1-rc1` y `evolution-go-krionix:0.7.2-community.1-whatsmeow-rc1`.
+- Imágenes candidatas publicadas (Docker Hub, públicas, linux/amd64). Son **release candidates**: usarlas en demo antes de producción.
+  - Desde `krionix/community-0.7.2` (commit `4a5bedc`):
+    `docker.io/c4rlosmor4n/evolution-go-krionix:0.7.2-community.1-rc1@sha256:5cfc1865b36c9a5fcb8e214f543664b08c4fd112d3a4e75eb07fc95fc3e42cde`
+  - Desde `krionix/community-0.7.2-whatsmeow` (commit `0c2748c`):
+    `docker.io/c4rlosmor4n/evolution-go-krionix:0.7.2-community.1-whatsmeow-rc1@sha256:7399b3185e436adabcb78e4412fb314f24da75c10ea046c01c6bcd0150f09cc3`
 - Revisión: triage de los 64 PRs abiertos de upstream; revisión independiente del diff final (sus hallazgos están corregidos).
 - Comparación con la imagen de producción `c4rlosmor4n/evolution-go-krionix:0.7.2-stability-rc1@sha256:2733bc13…`:
   - Su código no está en el fork y el binario no trae metadatos de VCS. Por eso comparé los símbolos de funciones (`go tool nm`) de su binario contra upstream 0.7.2 y contra esta rama.
