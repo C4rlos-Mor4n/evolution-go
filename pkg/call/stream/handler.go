@@ -53,6 +53,17 @@ func NewServer(lookup Lookup) *Server {
 	}
 }
 
+const (
+	reasonConsumerClosed = "consumer_closed"
+	reasonWriteError     = "write_error"
+)
+
+// consumerSideEnd reports whether the stream ended because of the consumer
+// (it left, sent "stop", went silent, or could not be written to).
+func consumerSideEnd(reason string) bool {
+	return reason == reasonConsumerClosed || reason == reasonWriteError
+}
+
 // ErrDisabledMessage is returned by every call endpoint while CALLS_ENABLED=false.
 const ErrDisabledMessage = "calls feature is disabled on this server (CALLS_ENABLED=false)"
 
@@ -110,8 +121,9 @@ func (s *Server) Serve(ctx *gin.Context) {
 	player := call.Play(b)
 
 	b.readLoop() // blocks until the consumer leaves or the bridge is closed
-	b.closeWith("consumer_closed")
+	b.closeWith(reasonConsumerClosed)
 	<-b.writerDone
+	reason, _ := b.reason.Load().(string)
 
 	// Detach before hanging up so the media goroutines stop touching the bridge.
 	call.Receive(nil)
@@ -119,15 +131,16 @@ func (s *Server) Serve(ctx *gin.Context) {
 	if player != nil {
 		player.Stop()
 	}
-	if call.State() != meowcaller.CallPhaseEnded {
+	if consumerSideEnd(reason) && call.State() != meowcaller.CallPhaseEnded {
 		// The stream is the call's only media path: once the consumer is gone
 		// nobody is listening or speaking, so end the call instead of leaving
-		// a silent call open.
+		// a silent call open. Closes initiated by the server side (call ended,
+		// runtime closed, expired, entry replaced) are terminated by whoever
+		// closed the stream, so the call is not touched here.
 		if err := call.Hangup(); err != nil {
 			logger.LogWarn("[%s] call stream: hangup after consumer left failed callId=%s: %v", instance.Id, callID, err)
 		}
 	}
-	reason, _ := b.reason.Load().(string)
 	logger.LogInfo("[%s] call stream closed callId=%s reason=%s droppedOut=%d droppedIn=%d",
 		instance.Id, callID, reason, b.droppedOut.Load(), b.droppedIn.Load())
 }

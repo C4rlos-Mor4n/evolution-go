@@ -2,6 +2,7 @@ package whatsmeow_service
 
 import (
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/evolution-foundation/evolution-go/pkg/config"
@@ -70,5 +71,28 @@ func TestAttachCallingEnabledAndReleased(t *testing.T) {
 	releaseNew()
 	if reg.OpenOwners() != 0 {
 		t.Fatalf("expected no open runtimes, got %d", reg.OpenOwners())
+	}
+}
+
+func TestRejectedByMeowcallerHandoff(t *testing.T) {
+	w := &whatsmeowService{meowRejected: &sync.Map{}}
+	if w.takeRejectedByMeowcaller("inst-a", "c1") {
+		t.Fatal("nothing marked yet")
+	}
+	w.markRejectedByMeowcaller("inst-a", "c1")
+	if w.takeRejectedByMeowcaller("inst-b", "c1") {
+		t.Fatal("handoff must be scoped by instance")
+	}
+	if !w.takeRejectedByMeowcaller("inst-a", "c1") {
+		t.Fatal("marked call not reported")
+	}
+	if w.takeRejectedByMeowcaller("inst-a", "c1") {
+		t.Fatal("handoff must be consumed once")
+	}
+	// A service without the map (CALLS disabled paths/tests) is safe.
+	var empty whatsmeowService
+	empty.markRejectedByMeowcaller("i", "c")
+	if empty.takeRejectedByMeowcaller("i", "c") {
+		t.Fatal("nil map must report false")
 	}
 }

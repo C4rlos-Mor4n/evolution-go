@@ -209,7 +209,11 @@ func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.C
 	// NOVO: PollHandler usando PollService já inicializado no whatsmeowService (evita dupla inicialização)
 	pollHandler := poll_handler.NewPollHandler(whatsmeowService.GetPollService(), loggerWrapper)
 
-	r := gin.Default()
+	// gin.Default() plus credential redaction in the access log: tokens sent as
+	// query parameters (?apikey= on /call/stream, ?token= on /ws) are logged as
+	// REDACTED while handlers still receive the original values.
+	r := gin.New()
+	r.Use(auth_middleware.RedactQueryCredentials, gin.Logger(), auth_middleware.RestoreQueryCredentials, gin.Recovery())
 
 	// CORS middleware — must be before everything else
 	r.Use(func(c *gin.Context) {

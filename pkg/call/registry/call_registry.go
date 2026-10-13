@@ -87,21 +87,40 @@ func (r *Registry[C]) OpenOwner(owner any) {
 
 // Store registers call for instanceID under owner. It fails if owner is not
 // open (its runtime has already been torn down) or the instance is at its cap.
-// Re-storing the same key replaces the previous entry.
+//
+// Storing the same call again is a no-op. Storing a DIFFERENT call under an
+// existing key (a re-delivered offer makes meowcaller replace its call object)
+// replaces the entry: the stream attached to the stale call is detached with
+// reason "replaced" (outside the lock), since that call no longer receives
+// media or end notifications.
 func (r *Registry[C]) Store(owner any, instanceID, callID string, call C) error {
 	if instanceID == "" || callID == "" {
 		return ErrNotFound
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if _, ok := r.owners[owner]; !ok {
+		r.mu.Unlock()
 		return ErrOwnerClosed
 	}
 	k := key{instanceID, callID}
-	if _, exists := r.entries[k]; !exists && r.countLocked(instanceID) >= MaxCallsPerInstance {
+	old, exists := r.entries[k]
+	if exists && old.call == call && old.owner == owner {
+		r.mu.Unlock()
+		return nil
+	}
+	if !exists && r.countLocked(instanceID) >= MaxCallsPerInstance {
+		r.mu.Unlock()
 		return ErrLimit
 	}
 	r.entries[k] = &entry[C]{owner: owner, call: call, createdAt: r.now()}
+	var detach func(string)
+	if exists {
+		detach = old.detach
+	}
+	r.mu.Unlock()
+	if detach != nil {
+		detach("replaced")
+	}
 	return nil
 }
 

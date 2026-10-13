@@ -52,9 +52,15 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 
 	mc.OnIncomingCall(func(call *meowcaller.Call) {
 		callID := call.ID()
-		// Instances with "reject calls" keep the existing whatsmeow auto-reject
-		// in myEventHandler; such calls are never offered to the API.
+		// Instances with "reject calls": meowcaller already pre-accepted the
+		// offer, so reject through it (which also ends the call inside
+		// meowcaller instead of leaving it there until a terminate that may
+		// never come). myEventHandler, which runs right after this handler,
+		// then skips its own whatsmeow reject but still sends the reject message.
 		if mycli := w.myClientPointer.Get(instanceID); mycli != nil && mycli.Instance != nil && mycli.Instance.RejectCall {
+			if err := call.Reject(); err == nil {
+				w.markRejectedByMeowcaller(instanceID, callID)
+			}
 			return
 		}
 		// Register the end listener before storing, then re-check the state,
@@ -63,7 +69,10 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 			registry.RemoveCall(instanceID, callID, call, "call_ended")
 		})
 		if err := registry.Store(owner, instanceID, callID, call); err != nil {
-			w.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] incoming call %s not registered: %v", instanceID, callID, err)
+			// Not answerable through the API (runtime closing, or too many
+			// calls): decline it so it does not linger inside meowcaller.
+			w.loggerWrapper.GetLogger(instanceID).LogWarn("[%s] incoming call %s not registered, rejecting: %v", instanceID, callID, err)
+			_ = call.Reject()
 			return
 		}
 		if call.State() == meowcaller.CallPhaseEnded {
@@ -87,14 +96,41 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 	}
 }
 
+// markRejectedByMeowcaller records that an auto-rejected offer was already
+// rejected through meowcaller (consumed by myEventHandler).
+func (w whatsmeowService) markRejectedByMeowcaller(instanceID, callID string) {
+	if w.meowRejected != nil {
+		w.meowRejected.Store(instanceID+"/"+callID, struct{}{})
+	}
+}
+
+// takeRejectedByMeowcaller reports (and forgets) whether the offer was already
+// rejected through meowcaller.
+func (w *whatsmeowService) takeRejectedByMeowcaller(instanceID, callID string) bool {
+	if w == nil || w.meowRejected == nil {
+		return false
+	}
+	_, ok := w.meowRejected.LoadAndDelete(instanceID + "/" + callID)
+	return ok
+}
+
 // hangupCalls ends calls in the background, waiting at most wait for them.
 func hangupCalls(calls []*meowcaller.Call, wait time.Duration) {
+	endCalls(calls, wait, (*meowcaller.Call).Hangup)
+}
+
+// rejectCalls declines ringing calls in the background, waiting at most wait.
+func rejectCalls(calls []*meowcaller.Call, wait time.Duration) {
+	endCalls(calls, wait, (*meowcaller.Call).Reject)
+}
+
+func endCalls(calls []*meowcaller.Call, wait time.Duration, end func(*meowcaller.Call) error) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for _, c := range calls {
 			if c != nil && c.State() != meowcaller.CallPhaseEnded {
-				_ = c.Hangup()
+				_ = end(c)
 			}
 		}
 	}()
@@ -119,14 +155,21 @@ func RunCallJanitor(ctx context.Context, registry *CallRegistry, interval time.D
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			var answered []*meowcaller.Call
+			var answered, ringing []*meowcaller.Call
 			for _, e := range registry.Expire(callRingTTL, callMaxDuration) {
 				if e.Answered {
 					answered = append(answered, e.Call)
+				} else {
+					ringing = append(ringing, e.Call)
 				}
 			}
 			if len(answered) > 0 {
 				hangupCalls(answered, callTeardownWait)
+			}
+			if len(ringing) > 0 {
+				// Ends them inside meowcaller too (its state would otherwise
+				// stay until a terminate stanza that evidently never came).
+				rejectCalls(ringing, callTeardownWait)
 			}
 		}
 	}

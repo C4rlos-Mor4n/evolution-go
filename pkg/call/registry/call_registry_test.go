@@ -65,6 +65,43 @@ func TestCrossInstanceIsolation(t *testing.T) {
 	}
 }
 
+func TestStoreReplacingCallDetachesStaleStream(t *testing.T) {
+	r := newReg()
+	owner := new(int)
+	r.OpenOwner(owner)
+	first, second := &fakeCall{"c"}, &fakeCall{"c"}
+	_ = r.Store(owner, "i", "c", first)
+	var reason string
+	_, release, err := r.AttachStream("i", "c", func(why string) { reason = why })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same call again: no-op, the stream stays attached.
+	_ = r.Store(owner, "i", "c", first)
+	if reason != "" {
+		t.Fatal("re-storing the same call must not detach its stream")
+	}
+	// A different call object under the same key replaces the entry.
+	if err := r.Store(owner, "i", "c", second); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "replaced" {
+		t.Fatalf("stale stream not detached, reason=%q", reason)
+	}
+	if got, _ := r.Get("i", "c"); got != second {
+		t.Fatal("entry not replaced")
+	}
+	release() // stale release must not touch the new entry
+	if _, rel, err := r.AttachStream("i", "c", func(string) {}); err != nil {
+		t.Fatalf("new call should accept a stream: %v", err)
+	} else {
+		rel()
+	}
+	if r.RemoveCall("i", "c", first, "x") {
+		t.Fatal("end callback of the stale call removed the new entry")
+	}
+}
+
 func TestStoreRejectsClosedOrUnknownOwner(t *testing.T) {
 	r := newReg()
 	owner := new(int)

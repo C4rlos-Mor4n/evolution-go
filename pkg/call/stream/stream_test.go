@@ -329,6 +329,30 @@ func TestCallEndClosesStream(t *testing.T) {
 	}
 }
 
+func TestServerSideDetachDoesNotHangUp(t *testing.T) {
+	srv, reg, call := setup(t, true)
+	c, _, err := dial(t, srv, "/call/stream/CALL1", "token-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = readMsg(t, c)
+	// The registry drops a still-active call (e.g. its entry was replaced or
+	// its runtime closed): the stream closes, and the owner of that decision,
+	// not the stream, is responsible for ending the call.
+	if _, ok := reg.Remove("inst-a", "CALL1", "replaced"); !ok {
+		t.Fatal("remove failed")
+	}
+	if m := readMsg(t, c); m.Event != "stop" || m.Reason != "replaced" {
+		t.Fatalf("expected stop/replaced, got %+v", m)
+	}
+	eventually(t, func() bool { return call.getSink() == nil }, "sink detached")
+	time.Sleep(50 * time.Millisecond)
+	if call.hangupCount() != 0 {
+		t.Fatal("a server-side detach must not hang up the call")
+	}
+}
+
 func TestSlowConsumerNeverBlocksMedia(t *testing.T) {
 	srv, _, call := setup(t, true)
 	c, _, err := dial(t, srv, "/call/stream/CALL1", "token-a")

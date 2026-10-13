@@ -101,6 +101,9 @@ type whatsmeowService struct {
 	// callRegistry holds the inbound calls captured by meowcaller (only used
 	// with CALLS_ENABLED=true).
 	callRegistry *CallRegistry
+	// meowRejected hands auto-rejected offers that meowcaller already
+	// rejected over to myEventHandler, so they are not rejected twice.
+	meowRejected *sync.Map
 }
 
 type MyClient struct {
@@ -2344,8 +2347,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		if mycli.Instance.RejectCall {
 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-rejecting call from %s", mycli.userID, evt.CallCreator.String())
 
-			// Rejeita a chamada
-			mycli.WAClient.RejectCall(context.Background(), evt.CallCreator, evt.CallID)
+			// Rejeita a chamada (unless CALLS_ENABLED already rejected it through meowcaller)
+			if svc, ok := mycli.service.(*whatsmeowService); ok && svc.takeRejectedByMeowcaller(mycli.userID, evt.CallID) {
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Call %s already rejected via meowcaller", mycli.userID, evt.CallID)
+			} else {
+				mycli.WAClient.RejectCall(context.Background(), evt.CallCreator, evt.CallID)
+			}
 
 			// Envia mensagem de rejeição se configurada
 			if mycli.Instance.MsgRejectCall != "" {
@@ -3319,6 +3326,7 @@ func NewWhatsmeowService(
 		loggerWrapper:      loggerWrapper,
 		passkeyCeremony:    ceremony.NewStore(),
 		callRegistry:       callRegistry,
+		meowRejected:       &sync.Map{},
 	}
 }
 

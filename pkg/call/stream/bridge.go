@@ -233,13 +233,13 @@ func (b *bridge) writeLoop() {
 		case data := <-b.out:
 			_ = b.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := b.conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				b.closeWith("write_error")
+				b.closeWith(reasonWriteError)
 				_ = b.conn.Close()
 				return
 			}
 		case <-ping.C:
 			if err := b.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
-				b.closeWith("write_error")
+				b.closeWith(reasonWriteError)
 				_ = b.conn.Close()
 				return
 			}
