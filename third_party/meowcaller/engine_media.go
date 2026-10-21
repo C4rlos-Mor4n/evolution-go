@@ -82,6 +82,10 @@ func (e *engine) maybeStartMedia(callID string) {
 		return
 	}
 	m.started = true
+	if ep := getMediaRelayEndpoint(rd, m.direction == CallDirectionIncoming); ep != nil {
+		m.mediaRelayName = ep.relayName
+	}
+	mediaRelay := m.mediaRelayName
 	mctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	call := m.call
@@ -99,10 +103,14 @@ func (e *engine) maybeStartMedia(callID string) {
 		call.setPhase(CallPhaseConnecting)
 	}
 	e.c.log.Info().Str("call_id", callID).Msg("starting media")
+	e.mark(callID, "media_start", "relay", mediaRelay)
 	go func() {
 		defer clear(callKey)
 		if err := e.runMedia(mctx, callID, call, callKey, selfLID, peerLID, rd, inbound); err != nil {
 			e.c.log.Warn().Err(err).Str("call_id", callID).Msg("media ended")
+			e.mark(callID, "media_ended", "error", err.Error())
+		} else {
+			e.mark(callID, "media_ended")
 		}
 	}()
 }
@@ -222,9 +230,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	}
 	ch, allocate, err := e.connectAndAllocate(ctx, rd, streamSsrcs, inbound)
 	if err != nil {
+		e.mark(callID, "relay_connect_failed", "error", err.Error())
 		return err
 	}
 	defer ch.Close()
+	e.mark(callID, "relay_connected_allocate_sent")
+	mediaStarted := time.Now()
 	allocateState := newGroupRelayAllocateStateWithHBHFEC(
 		allocate,
 		rd.relayKeyASCII,
@@ -467,6 +478,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			}
 			if relayRx.Load() == 0 {
 				log.Warn().Dur("after", d).Msg("relay silent after allocate, no bytes back yet (allocate undelivered or rejected)")
+				e.mark(callID, "relay_silent", "after_ms", fmt.Sprint(d.Milliseconds()))
 			}
 		}
 	}()
@@ -594,6 +606,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			}
 			if txCount++; txCount == 1 {
 				log.Info().Int("bytes", len(packet)).Msg("first RTP sent to relay, outbound media flowing")
+				e.mark(callID, "first_rtp_sent")
 				e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_sent", "call_id": callID, "bytes": len(packet)})
 			}
 		}
@@ -831,7 +844,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			rosterGeneration = currentRosterGeneration
 			hasRosterGeneration = true
 		}
-		relayRx.Add(1)
+		if relayRx.Add(1) == 1 {
+			e.mark(callID, "relay_first_bytes", "after_ms", fmt.Sprint(time.Since(mediaStarted).Milliseconds()))
+		}
 		rawPkt := buf[:n]
 		pkt, groupWrapped, groupValid := relay.UnwrapGroupForwardingPacket(rawPkt)
 		if !groupValid {
@@ -905,6 +920,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		}
 		if rtpSeen++; rtpSeen == 1 {
 			log.Info().Int("bytes", n).Msg("first RTP-classified packet from relay, relay is bridging the peer's media")
+			e.mark(callID, "first_rtp_received", "after_ms", fmt.Sprint(time.Since(mediaStarted).Milliseconds()))
 		}
 		vh, vok := rtp.ParseRtpHeader(pkt)
 		if vok {
@@ -1082,6 +1098,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		if !ok {
 			if unprotectFail++; unprotectFail == 1 {
 				log.Warn().Uint32("ssrc", vh.Ssrc).Int("bytes", n).Msg("audio RTP did not match an authenticated active participant")
+				e.mark(callID, "audio_decrypt_failed")
 			}
 			e.c.diag.Emit("srtp", map[string]any{"event": "unprotect_failed", "ssrc": vh.Ssrc, "bytes": n})
 			continue
@@ -1124,6 +1141,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		}
 		if rtpIn++; rtpIn == 1 {
 			log.Info().Msg("first RTP decoded from relay, inbound audio flowing")
+			e.mark(callID, "first_audio_decoded", "after_ms", fmt.Sprint(time.Since(mediaStarted).Milliseconds()))
 			e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_in", "call_id": callID})
 			if call != nil {
 				call.setPhase(CallPhaseActive)

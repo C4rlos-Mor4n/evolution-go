@@ -85,13 +85,37 @@ type engineCall struct {
 	muteSeen    bool
 	muteFrom    types.JID
 	muteCreator types.JID
+
+	// KRIONIX PATCH: relay the media loop was started on (to detect later relay changes).
+	mediaRelayName string
+}
+
+// mark emits a sanitized milestone (KRIONIX PATCH). kv are key/value pairs.
+func (e *engine) mark(callID, name string, kv ...string) {
+	if e == nil || e.c == nil || e.c.milestone == nil {
+		return
+	}
+	attrs := make(map[string]string, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		attrs[kv[i]] = kv[i+1]
+	}
+	e.c.milestone(callID, name, attrs)
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // KRIONIX PATCH: if no <mute_v2> arrives after Answer (some clients never send one, or
 // it was consumed before), send the <accept> anyway once the relay is known.
 var (
-	acceptFallbackDelay   = 2 * time.Second
-	acceptFallbackTimeout = 15 * time.Second
+	// Long enough not to pre-empt a mute_v2 that is still coming (the accept is normally
+	// sent on the first mute_v2, ~1s after the offer).
+	acceptFallbackDelay   = 6 * time.Second
+	acceptFallbackTimeout = 20 * time.Second
 )
 
 // newEngine creates the engine for a Client.
@@ -601,8 +625,15 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 	// Answer/Reject decision. It keeps the offer alive and joins the relay election while
 	// the integrator decides — even a call the user goes on to decline has usually already
 	// been preaccepted.
+	e.mu.Lock()
+	relayInOffer := e.calls[ev.CallID] != nil && e.calls[ev.CallID].relay != nil
+	e.mu.Unlock()
+	e.mark(ev.CallID, "offer_received", "relay_in_offer", boolStr(relayInOffer), "video", boolStr(isVideo))
 	if err := e.sendPreaccept(ev.CallID, ev.From, ev.CallCreator, isVideo); err != nil {
 		e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("preaccept failed")
+		e.mark(ev.CallID, "preaccept_failed", "error", err.Error())
+	} else {
+		e.mark(ev.CallID, "preaccept_sent")
 	}
 
 	if fn := e.c.incomingCallHandler(); fn != nil {
@@ -700,13 +731,16 @@ func (e *engine) answer(c *Call) error {
 	e.mu.Lock()
 	m.acceptPending = true
 	muteSeen, muteFrom, muteCreator := m.muteSeen, m.muteFrom, m.muteCreator
+	relayKnown := m.relay != nil
 	e.mu.Unlock()
+	e.mark(c.id, "answer_called", "mute_v2_already_seen", boolStr(muteSeen), "relay_known", boolStr(relayKnown))
 
 	c.setPhase(CallPhaseConnecting)
 	e.maybeStartMedia(c.id)
 
 	if muteSeen {
 		e.c.log.Info().Str("call_id", c.id).Msg("mute_v2 already received before answer; sending accept now")
+		e.mark(c.id, "accept_trigger", "trigger", "answer_after_mute_v2")
 		e.sendAccept(c.id, muteFrom, muteCreator)
 		return nil
 	}
@@ -731,14 +765,17 @@ func (e *engine) acceptFallback(callID string, delay, timeout time.Duration) {
 		relayKnown := m.relay != nil
 		to, creator := m.from, m.creator
 		e.mu.Unlock()
-		if relayKnown {
-			e.c.log.Info().Str("call_id", callID).Msg("no mute_v2 after answer; sending accept (fallback)")
-			e.sendAccept(callID, to, creator)
+		if time.Now().After(deadline) {
+			e.c.log.Warn().Str("call_id", callID).Msg("accept fallback gave up")
+			e.mark(callID, "accept_fallback_gave_up", "relay_known", boolStr(relayKnown))
 			return
 		}
-		if time.Now().After(deadline) {
-			e.c.log.Warn().Str("call_id", callID).Msg("accept fallback gave up: relay endpoint never arrived")
-			return
+		if relayKnown {
+			e.c.log.Info().Str("call_id", callID).Msg("no mute_v2 after answer; sending accept (fallback)")
+			e.mark(callID, "accept_trigger", "trigger", "fallback_no_mute_v2")
+			e.sendAccept(callID, to, creator) // on failure acceptPending is restored: loop retries
+			time.Sleep(time.Second)
+			continue
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -772,9 +809,17 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 	}
 	if err := e.transmitCallNode(context.Background(), accept); err != nil {
 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
+		e.mark(callID, "accept_failed", "error", err.Error())
+		// KRIONIX PATCH: keep the accept pending so the next mute_v2 / fallback retries it
+		e.mu.Lock()
+		if cur := e.calls[callID]; cur != nil {
+			cur.acceptPending = true
+		}
+		e.mu.Unlock()
 		return
 	}
 	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted (after mute_v2)")
+	e.mark(callID, "accept_sent", "video", boolStr(isVideo))
 }
 
 // reject declines an inbound call.
@@ -824,6 +869,11 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
 	if m == nil {
 		e.mu.Unlock()
 		return
+	}
+	if m.started && m.mediaRelayName != "" {
+		if ep := getMediaRelayEndpoint(rd, m.direction == CallDirectionIncoming); ep != nil && ep.relayName != m.mediaRelayName {
+			e.mark(callID, "relay_changed_after_media_start", "media_relay", m.mediaRelayName, "new_relay", ep.relayName)
+		}
 	}
 	m.relay = rd
 	if !rd.peerJID.IsEmpty() {
@@ -1147,6 +1197,9 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		m := e.calls[callID]
 		pending := m != nil && m.acceptPending
 		e.mu.Unlock()
+		if m != nil {
+			e.mark(callID, "mute_v2", "accept_pending", boolStr(pending), "muted", boolStr(muted))
+		}
 		if m != nil && m.call != nil {
 			if fn := m.call.onMuteStateFn(); fn != nil {
 				fn(muted)
@@ -1174,6 +1227,7 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 			Str("mute_state", muteState).
 			Bool("muted", muted).
 			Msg("first mute_v2 received; sending deferred accept")
+		e.mark(callID, "accept_trigger", "trigger", "mute_v2")
 		e.sendAccept(callID, callNode.AttrGetter().JID("from"), mv.JID("call-creator"))
 		return false
 	case "video":

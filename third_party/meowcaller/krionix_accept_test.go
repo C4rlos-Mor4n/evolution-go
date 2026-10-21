@@ -5,6 +5,7 @@ package meowcaller
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,5 +158,82 @@ func TestFallbackStopsWhenCallEnds(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if got := sent.accepts(); got != 0 {
 		t.Fatalf("accept sent for an ended call: %d", got)
+	}
+}
+
+// A failed <accept> send must stay pending and be retried (fallback), exactly one success.
+func TestAcceptSendFailureIsRetried(t *testing.T) {
+	shortFallback(t)
+	eng, call, sent := incomingTestEngine(t, true)
+	var mu sync.Mutex
+	failures := 0
+	inner := eng.sendCallNode
+	eng.sendCallNode = func(ctx context.Context, node waBinary.Node) error {
+		isAccept := false
+		for _, kid := range node.GetChildren() {
+			if kid.Tag == "accept" {
+				isAccept = true
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if isAccept && failures == 0 {
+			failures++
+			return context.DeadlineExceeded
+		}
+		return inner(ctx, node)
+	}
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	eng.onCallRaw(muteV2Node("0")) // first accept attempt fails
+	waitFor(t, func() bool { return sent.accepts() == 1 })
+	mu.Lock()
+	defer mu.Unlock()
+	if failures != 1 || sent.accepts() != 1 {
+		t.Fatalf("want 1 failed + 1 successful accept, got failures=%d accepts=%d", failures, sent.accepts())
+	}
+}
+
+// Milestones: order for the human-answer path, and no identifiers in attributes.
+func TestMilestonesForAnswerAfterMuteV2(t *testing.T) {
+	shortFallback(t)
+	eng, call, _ := incomingTestEngine(t, true)
+	var mu sync.Mutex
+	var names []string
+	var attrsSeen []map[string]string
+	eng.c.milestone = func(callID, name string, attrs map[string]string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if callID != testCallID {
+			t.Errorf("milestone for unexpected call %q", callID)
+		}
+		names = append(names, name)
+		attrsSeen = append(attrsSeen, attrs)
+	}
+	eng.onCallRaw(muteV2Node("0"))
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"mute_v2", "answer_called", "accept_trigger", "accept_sent"}
+	if len(names) < len(want) {
+		t.Fatalf("milestones = %v, want prefix %v", names, want)
+	}
+	for i, n := range want {
+		if names[i] != n {
+			t.Fatalf("milestones = %v, want prefix %v", names, want)
+		}
+	}
+	if attrsSeen[1]["mute_v2_already_seen"] != "true" || attrsSeen[2]["trigger"] != "answer_after_mute_v2" {
+		t.Fatalf("unexpected attrs: %v", attrsSeen)
+	}
+	for _, attrs := range attrsSeen {
+		for k, v := range attrs {
+			if strings.Contains(v, "@") || strings.Contains(v, testCaller.User) {
+				t.Fatalf("milestone attr %s leaks an identifier: %q", k, v)
+			}
+		}
 	}
 }

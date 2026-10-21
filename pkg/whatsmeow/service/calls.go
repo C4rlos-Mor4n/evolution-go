@@ -2,6 +2,9 @@ package whatsmeow_service
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,7 +51,10 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 	registry := w.callRegistry
 	// Sanitized logger (identifiers stripped, warn by default, never debug): without it
 	// meowcaller's setup/media errors were invisible.
-	mc := meowcaller.NewClient(client, meowcaller.WithLogger(meowcallerLogger(w.config.CallsLogLevel)))
+	mc := meowcaller.NewClient(client,
+		meowcaller.WithLogger(meowcallerLogger(w.config.CallsLogLevel)),
+		meowcaller.WithMilestones(w.callMilestoneLogger(instanceID)),
+	)
 	owner := mc
 	registry.OpenOwner(owner)
 
@@ -205,4 +211,35 @@ func callPhaseName(p meowcaller.CallPhase) string {
 		return "waiting_room"
 	}
 	return "unknown"
+}
+
+// callMilestoneLogger logs meowcaller's sanitized call milestones at INFO, independent of
+// CALLS_LOG_LEVEL, with the time elapsed since the offer. They separate the failure classes
+// of a call: signaling (preaccept/answer/mute_v2/accept), relay transport (connect, first
+// bytes, silent) and media (first RTP sent/received, decrypt failure, first decoded audio).
+// Attributes never contain identifiers, keys, addresses of the people on the call or media.
+func (w whatsmeowService) callMilestoneLogger(instanceID string) meowcaller.MilestoneFunc {
+	var starts sync.Map // callID -> time.Time (first milestone)
+	return func(callID, name string, attrs map[string]string) {
+		now := time.Now()
+		first, _ := starts.LoadOrStore(callID, now)
+		elapsed := now.Sub(first.(time.Time)).Round(time.Millisecond)
+		keys := make([]string, 0, len(attrs))
+		for k := range attrs {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var b strings.Builder
+		for _, k := range keys {
+			v := strings.ReplaceAll(attrs[k], "\n", " ")
+			if len(v) > 160 {
+				v = v[:160] + "..."
+			}
+			fmt.Fprintf(&b, " %s=%q", k, v)
+		}
+		w.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] call %s milestone=%s t+%s%s", instanceID, callID, name, elapsed, b.String())
+		if name == "media_ended" {
+			starts.Delete(callID)
+		}
+	}
 }

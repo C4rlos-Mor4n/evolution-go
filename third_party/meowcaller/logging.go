@@ -10,8 +10,19 @@ import (
 type Option func(*config)
 
 type config struct {
-	log  zerolog.Logger
-	diag *diag.Recorder
+	log       zerolog.Logger
+	diag      *diag.Recorder
+	milestone MilestoneFunc
+}
+
+// MilestoneFunc receives call setup/media milestones (KRIONIX PATCH). attrs only carry
+// event names, booleans, counts, Meta relay names and error text: never JIDs, keys, IPs,
+// SDP or media. It is called synchronously from signaling/media goroutines: keep it cheap.
+type MilestoneFunc func(callID, name string, attrs map[string]string)
+
+// WithMilestones registers a sanitized milestone callback (KRIONIX PATCH).
+func WithMilestones(fn MilestoneFunc) Option {
+	return func(c *config) { c.milestone = fn }
 }
 
 func resolveConfig(opts []Option) config {
