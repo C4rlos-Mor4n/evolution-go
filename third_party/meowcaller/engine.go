@@ -933,19 +933,44 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	if rl == nil {
 		return
 	}
+	// Only endorse relays we can actually receive on. The caller's probes
+	// routinely include its own nearest edge, which is absent from the offer
+	// and holds no tokens for us; echoing that entry back tells the caller both
+	// sides reach it, the election picks it, and the caller's media moves to a
+	// relay we were never connected to.
+	e.mu.Lock()
+	offered := map[string]bool{}
+	if m.relay != nil {
+		for i := range m.relay.endpoints {
+			if name := m.relay.endpoints[i].relayName; name != "" {
+				offered[name] = true
+			}
+		}
+	}
+	e.mu.Unlock()
+
 	var probes []rlProbe
+	var answered, skipped []string
 	for i := range rl.GetChildren() {
 		te := &rl.GetChildren()[i]
 		if te.Tag != "te" {
 			continue
 		}
 		ag := te.AttrGetter()
+		name := ag.String("relay_name")
+		if len(offered) > 0 && !offered[name] {
+			e.c.log.Debug().Str("call_id", ev.CallID).Str("relay_name", name).Msg("skipping latency response for relay outside the offer")
+			skipped = append(skipped, name)
+			continue
+		}
+		answered = append(answered, name)
 		probes = append(probes, rlProbe{
 			latency:   decodeLatency(ag.String("latency")),
-			relayName: ag.String("relay_name"),
+			relayName: name,
 			addr:      nodeBytes(te),
 		})
 	}
+	e.mark(ev.CallID, "relaylatency", "answered", strings.Join(answered, ","), "skipped_outside_offer", strings.Join(skipped, ","))
 	for _, p := range probes {
 		resp := signaling.BuildRelayLatency(&signaling.RelayLatencyParams{
 			CallID:       ev.CallID,
