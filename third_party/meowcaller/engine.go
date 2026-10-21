@@ -76,7 +76,23 @@ type engineCall struct {
 
 	// The callee <accept> is deferred until the caller's <mute_v2> arrives.
 	acceptPending bool
+
+	// KRIONIX PATCH: the caller's first <mute_v2> usually arrives ~1s after the offer,
+	// right after the relay election that the callee answers eagerly. When the call is
+	// answered by a human (seconds later) that mute_v2 is gone by the time Answer runs,
+	// so the deferred <accept> was never sent: the caller's phone never connected and
+	// no RTP flowed in either direction. Remember it so Answer can accept immediately.
+	muteSeen    bool
+	muteFrom    types.JID
+	muteCreator types.JID
 }
+
+// KRIONIX PATCH: if no <mute_v2> arrives after Answer (some clients never send one, or
+// it was consumed before), send the <accept> anyway once the relay is known.
+var (
+	acceptFallbackDelay   = 2 * time.Second
+	acceptFallbackTimeout = 15 * time.Second
+)
 
 // newEngine creates the engine for a Client.
 func newEngine(c *Client) *engine {
@@ -683,11 +699,49 @@ func (e *engine) answer(c *Call) error {
 	}
 	e.mu.Lock()
 	m.acceptPending = true
+	muteSeen, muteFrom, muteCreator := m.muteSeen, m.muteFrom, m.muteCreator
 	e.mu.Unlock()
 
 	c.setPhase(CallPhaseConnecting)
 	e.maybeStartMedia(c.id)
+
+	if muteSeen {
+		e.c.log.Info().Str("call_id", c.id).Msg("mute_v2 already received before answer; sending accept now")
+		e.sendAccept(c.id, muteFrom, muteCreator)
+		return nil
+	}
+	go e.acceptFallback(c.id, acceptFallbackDelay, acceptFallbackTimeout)
 	return nil
+}
+
+// acceptFallback sends the deferred <accept> if no <mute_v2> triggered it shortly after
+// Answer, as soon as the relay endpoint is known (KRIONIX PATCH).
+func (e *engine) acceptFallback(callID string, delay, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+	for {
+		e.mu.Lock()
+		m := e.calls[callID]
+		if m == nil || !m.acceptPending {
+			e.mu.Unlock()
+			return // ended, or accepted through mute_v2
+		}
+		relayKnown := m.relay != nil
+		to, creator := m.from, m.creator
+		e.mu.Unlock()
+		if relayKnown {
+			e.c.log.Info().Str("call_id", callID).Msg("no mute_v2 after answer; sending accept (fallback)")
+			e.sendAccept(callID, to, creator)
+			return
+		}
+		if time.Now().After(deadline) {
+			e.c.log.Warn().Str("call_id", callID).Msg("accept fallback gave up: relay endpoint never arrived")
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // sendAccept sends the deferred callee <accept> (once), in the WA-Web format (metadata +
@@ -709,8 +763,14 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		Metadata:   waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
 		Video:      isVideo,
 	})
-	accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
-	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), accept); err != nil {
+	// KRIONIX PATCH: send through the injectable call-node path (same SendNode in production)
+	// so the accept path is unit-testable.
+	if e.c != nil && e.c.wa != nil {
+		accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
+	} else {
+		accept.Attrs["id"] = e.nextCallNodeID()
+	}
+	if err := e.transmitCallNode(context.Background(), accept); err != nil {
 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
 		return
 	}
@@ -1093,6 +1153,15 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 			}
 		}
 		if !pending {
+			if m != nil && m.direction == CallDirectionIncoming {
+				e.mu.Lock()
+				if cur := e.calls[callID]; cur != nil && !cur.muteSeen {
+					cur.muteSeen = true
+					cur.muteFrom = callNode.AttrGetter().JID("from")
+					cur.muteCreator = mv.JID("call-creator")
+				}
+				e.mu.Unlock()
+			}
 			e.c.log.Debug().
 				Str("call_id", callID).
 				Str("mute_state", muteState).

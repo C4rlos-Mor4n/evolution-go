@@ -17,6 +17,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/purpshell/meowcaller v0.0.0-20260726180203-6d9b7b2c1807
 	github.com/rabbitmq/amqp091-go v1.10.0
+	github.com/rs/zerolog v1.35.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/swaggo/files v1.0.1
 	github.com/swaggo/gin-swagger v1.6.0
@@ -88,7 +89,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.12 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
@@ -108,3 +108,5 @@ require (
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 )
+
+replace github.com/purpshell/meowcaller => ./third_party/meowcaller

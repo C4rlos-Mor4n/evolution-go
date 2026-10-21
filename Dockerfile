@@ -6,6 +6,8 @@ WORKDIR /build
 
 # Copiar apenas arquivos de dependências primeiro para cachear o download
 COPY go.mod go.sum ./
+# Locally patched meowcaller (go.mod replace => ./third_party/meowcaller) must exist before go mod download
+COPY third_party ./third_party
 
 # whatsmeow agora vem do proxy oficial (go.mau.fi/whatsmeow, sem replace local) —
 # não há mais submódulo whatsmeow-lib para copiar.
