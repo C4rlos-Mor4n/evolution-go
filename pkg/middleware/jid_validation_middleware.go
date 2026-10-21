@@ -188,7 +188,7 @@ func (m *JIDValidationMiddleware) ValidateNumberField() gin.HandlerFunc {
 						if normalizedJID != strValue {
 							arrayValue[i] = normalizedJID
 							modified = true
-							logger.LogDebug("Normalized number[%d] from %s to %s", i, strValue, normalizedJID)
+							logger.LogDebug("Normalized number[%d] from %s to %s", i, utils.MaskID(strValue), utils.MaskID(fmt.Sprint(normalizedJID)))
 						}
 					} else if strValue == "" {
 						c.JSON(http.StatusBadRequest, gin.H{
@@ -220,7 +220,7 @@ func (m *JIDValidationMiddleware) ValidateNumberField() gin.HandlerFunc {
 				if normalizedJID != strValue {
 					requestData["number"] = normalizedJID
 					modified = true
-					logger.LogDebug("Normalized number from %s to %s", strValue, normalizedJID)
+					logger.LogDebug("Normalized number from %s to %s", utils.MaskID(strValue), utils.MaskID(fmt.Sprint(normalizedJID)))
 				}
 			} else {
 				c.JSON(http.StatusBadRequest, gin.H{
@@ -384,7 +384,7 @@ func (m *JIDValidationMiddleware) ValidateNumberFieldWithFormatJid() gin.Handler
 							if normalizedJID != strValue {
 								arrayValue[i] = normalizedJID
 								modified = true
-								logger.LogDebug("Normalized number[%d] from %s to %s", i, strValue, normalizedJID)
+								logger.LogDebug("Normalized number[%d] from %s to %s", i, utils.MaskID(strValue), utils.MaskID(fmt.Sprint(normalizedJID)))
 							}
 						}
 						// When formatJid is false, we accept numbers as received without validation
@@ -420,7 +420,7 @@ func (m *JIDValidationMiddleware) ValidateNumberFieldWithFormatJid() gin.Handler
 					if normalizedJID != strValue {
 						requestData["number"] = normalizedJID
 						modified = true
-						logger.LogDebug("Normalized number from %s to %s", strValue, normalizedJID)
+						logger.LogDebug("Normalized number from %s to %s", utils.MaskID(strValue), utils.MaskID(fmt.Sprint(normalizedJID)))
 					}
 				}
 				// When formatJid is false, we accept numbers as received without validation

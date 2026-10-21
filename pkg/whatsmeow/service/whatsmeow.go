@@ -700,7 +700,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 	unlockStart()
 
 	if client.Store.ID != nil {
-		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Already logged in with JID: %s", cd.Instance.Id, client.Store.ID.String())
+		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Already logged in with JID: %s", cd.Instance.Id, utils.MaskID(client.Store.ID.String()))
 		err = client.Connect()
 		if err != nil {
 			if strings.Contains(err.Error(), "EOF") {
@@ -1037,9 +1037,8 @@ func (mycli *MyClient) handleQRCodes(codes []string) {
 				return
 			}
 
-			if mycli.config.LogType != "json" {
-				fmt.Println("QR code:\n", code)
-			}
+			// The raw QR link pairs a device to the account: never print or log it.
+			// It is only stored for the API and sent to the instance's own webhook.
 
 			image, _ := qrcode.Encode(code, qrcode.Medium, 256)
 			base64qrcode := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
@@ -1328,7 +1327,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.PairSuccess:
 		doWebhook = true
 		postMap["event"] = "PairSuccess"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("QR Pair Success for user '%s' with JID '%s' - '%s'", mycli.userID, evt.ID.String(), mycli.WAClient.Store.ID.String())
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("QR Pair Success for user '%s' with JID '%s'", mycli.userID, utils.MaskID(evt.ID.String()))
 
 		instance, err := mycli.instanceRepository.GetInstanceByID(mycli.userID)
 		if err != nil {
@@ -1340,7 +1339,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		instance.DisconnectReason = ""
 		instance.Jid = mycli.WAClient.Store.ID.String()
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Updating JID: %s in Instance: %s", mycli.userID, mycli.WAClient.Store.ID.String(), instance.Jid)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Updating JID: %s in Instance: %s", mycli.userID, utils.MaskID(mycli.WAClient.Store.ID.String()), utils.MaskID(instance.Jid))
 
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Attempting to update instance in DB: %+v", mycli.userID, instance)
 		err = mycli.instanceRepository.Update(instance)
@@ -1527,7 +1526,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			messageSize = fmt.Sprintf("%d bytes", *evt.Message.GetAudioMessage().FileLength)
 		}
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE RECEIVED ===== ID: %s, From: %s, Type: %s, Size: %s", mycli.userID, evt.Info.ID, evt.Info.Chat.String(), evt.Info.Type, messageSize)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE RECEIVED ===== ID: %s, From: %s, Type: %s, Size: %s", mycli.userID, evt.Info.ID, utils.MaskID(evt.Info.Chat.String()), evt.Info.Type, messageSize)
 
 		// se readMessages for true ele marca como lida
 		if mycli.Instance.ReadMessages {
@@ -1536,7 +1535,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			if err != nil {
 				mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to auto-mark message as read: %v", mycli.userID, err)
 			} else {
-				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, evt.Info.Chat.String())
+				mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, utils.MaskID(evt.Info.Chat.String()))
 			}
 		}
 
@@ -1640,7 +1639,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				if err != nil {
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to auto-mark message as read: %v", mycli.userID, err)
 				} else {
-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, evt.Info.Chat.String())
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-marked message as read from %s", mycli.userID, utils.MaskID(evt.Info.Chat.String()))
 				}
 			}()
 		}
@@ -2155,7 +2154,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			}
 		}
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE PROCESSING COMPLETED ===== ID: %s, From: %s, Type: %s, Webhook: %v", mycli.userID, evt.Info.ID, evt.Info.Chat.String(), evt.Info.Type, doWebhook)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] ===== MESSAGE PROCESSING COMPLETED ===== ID: %s, From: %s, Type: %s, Webhook: %v", mycli.userID, evt.Info.ID, utils.MaskID(utils.MaskID(evt.Info.Chat.String())), evt.Info.Type, doWebhook)
 	case *events.Receipt:
 		doWebhook = true
 		postMap["event"] = "Receipt"
@@ -2261,7 +2260,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] History sync event received %+v", mycli.userID, evt.Data.SyncType)
 	case *events.AppState:
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] App state event received %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] App state event received %T", mycli.userID, evt)
 	case *events.LoggedOut:
 		doWebhook = true
 		postMap["event"] = "LoggedOut"
@@ -2338,14 +2337,14 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.ChatPresence:
 		doWebhook = true
 		postMap["event"] = "ChatPresence"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Chat presence received %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Chat presence received (%s)", mycli.userID, evt.State)
 	case *events.CallOffer:
 		doWebhook = true
 		postMap["event"] = "CallOffer"
 
 		// Verifica se deve rejeitar chamadas automaticamente
 		if mycli.Instance.RejectCall {
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-rejecting call from %s", mycli.userID, evt.CallCreator.String())
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Auto-rejecting call %s", mycli.userID, evt.CallID)
 
 			// Rejeita a chamada (unless CALLS_ENABLED already rejected it through meowcaller)
 			if svc, ok := mycli.service.(*whatsmeowService); ok && svc.takeRejectedByMeowcaller(mycli.userID, evt.CallID) {
@@ -2366,21 +2365,21 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				if err != nil {
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogError("[%s] Failed to send reject call message: %v", mycli.userID, err)
 				} else {
-					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Sent reject call message to %s", mycli.userID, evt.CallCreator.String())
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Sent reject call message for call %s", mycli.userID, evt.CallID)
 				}
 			}
 			return
 		}
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer callId=%s", mycli.userID, evt.CallID)
 	case *events.CallAccept:
 		doWebhook = true
 		postMap["event"] = "CallAccept"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call accept callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call accept callId=%s", mycli.userID, evt.CallID)
 	case *events.CallTerminate:
 		doWebhook = true
 		postMap["event"] = "CallTerminate"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call terminate callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call terminate callId=%s reason=%s", mycli.userID, evt.CallID, evt.Reason)
 		// meowcaller's own end callback normally removed it already; this is the
 		// belt-and-braces removal, scoped to this instance only.
 		if svc, ok := mycli.service.(*whatsmeowService); ok && svc.callRegistry != nil {
@@ -2389,11 +2388,14 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 	case *events.CallOfferNotice:
 		doWebhook = true
 		postMap["event"] = "CallOfferNotice"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer notice callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call offer notice callId=%s", mycli.userID, evt.CallID)
 	case *events.CallRelayLatency:
 		doWebhook = true
 		postMap["event"] = "CallRelayLatency"
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call relay latency callId=%s from=%s creator=%s", mycli.userID, evt.CallID, evt.From, evt.CallCreator)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Got call relay latency callId=%s", mycli.userID, evt.CallID)
+	case *events.CallTransport, *events.CallPreAccept, *events.CallReject:
+		// Consumed by the call engine (meowcaller); no webhook. These stanzas carry relay
+		// endpoints and credentials, so they must not reach the generic "unhandled" dump.
 	case *events.OfflineSyncCompleted:
 		doWebhook = true
 		postMap["event"] = "OfflineSyncCompleted"
@@ -2496,12 +2498,12 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		doWebhook = true
 		postMap["event"] = "LabelAssociationChat"
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Label association chat received %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Label association chat received (label %s)", mycli.userID, evt.LabelID)
 	case *events.LabelAssociationMessage:
 		doWebhook = true
 		postMap["event"] = "LabelAssociationMessage"
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Label association message received %+v", mycli.userID, evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Label association message received (label %s)", mycli.userID, evt.LabelID)
 	case *events.Contact:
 		doWebhook = true
 		postMap["event"] = "Contact"
@@ -2553,7 +2555,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] ID is not 66 or 67 or view_once, skipping", mycli.userID)
 		}
 	default:
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Unhandled event %s: %+v", mycli.userID, fmt.Sprintf("%T", evt), evt)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogWarn("[%s] Unhandled event %T", mycli.userID, evt)
 		return
 	}
 

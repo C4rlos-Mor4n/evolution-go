@@ -364,7 +364,7 @@ func (u *userService) ResolveLid(data *ResolveLidStruct, instance *instance_mode
 			return nil, errors.New("invalid groupJid")
 		}
 
-		u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] No cached phone number for lid %s, refreshing group %s as fallback", instance.Id, lidJID, groupJID)
+		u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] No cached phone number for lid %s, refreshing group %s as fallback", instance.Id, utils.MaskID(fmt.Sprint(lidJID)), utils.MaskID(fmt.Sprint(groupJID)))
 
 		if _, groupErr := client.GetGroupInfo(ctx, groupJID); groupErr != nil {
 			u.loggerWrapper.GetLogger(instance.Id).LogWarn("[%s] Failed to refresh group %s for lid fallback: %v", instance.Id, groupJID, groupErr)

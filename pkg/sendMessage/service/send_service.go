@@ -558,7 +558,7 @@ func (s *sendService) validateAndCheckUserExists(phone string, formatJid *bool, 
 		return types.NewJID("", types.DefaultUserServer), fmt.Errorf("number %s is not registered on WhatsApp", phone)
 	}
 
-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Number %s verified as valid WhatsApp user, using remoteJID: %s", instance.Id, phone, remoteJID)
+	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Number %s verified as valid WhatsApp user, using remoteJID: %s", instance.Id, utils.MaskID(phone), utils.MaskID(fmt.Sprint(remoteJID)))
 
 	// Validate the remoteJID with formatJid=false for message sending
 	formatJidFalse := false
@@ -2509,12 +2509,12 @@ func (s *sendService) SendList(data *ListStruct, instance *instance_model.Instan
 		return nil, err
 	}
 
-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] List sent to %s", instance.Id, data.Number)
+	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] List sent to %s", instance.Id, utils.MaskID(data.Number))
 	return message, nil
 }
 
 func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.Message, messageType string, data *SendDataStruct) (*MessageSendStruct, error) {
-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMessage called for number: %s, type: %s", instance.Id, data.Number, messageType)
+	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] SendMessage called for number: %s, type: %s", instance.Id, utils.MaskID(data.Number), messageType)
 
 	recipient, err := s.validateAndCheckUserExists(data.Number, data.FormatJid, &data.Quoted.MessageID, &data.Quoted.MessageID, instance)
 	if err != nil {
@@ -2960,7 +2960,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 		go s.whatsmeowService.SendToGlobalQueues(postMap["event"].(string), values, instance.Id)
 	}
 
-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Message sent to %s", instance.Id, data.Number)
+	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Message sent to %s", instance.Id, utils.MaskID(data.Number))
 	return messageSent, nil
 }
 
@@ -3187,7 +3187,7 @@ func (s *sendService) SendCarousel(data *CarouselStruct, instance *instance_mode
 		return nil, err
 	}
 
-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Carousel sent to %s with %d cards", instance.Id, data.Number, len(data.Cards))
+	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Carousel sent to %s with %d cards", instance.Id, utils.MaskID(data.Number), len(data.Cards))
 	return message, nil
 }
 

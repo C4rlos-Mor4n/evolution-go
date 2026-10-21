@@ -302,7 +302,7 @@ func (m *messageService) ChatPresence(data *ChatPresenceStruct, instance *instan
 		}
 	}
 
-	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Presence (%s) sent to %s", data.State, data.Number)
+	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Presence (%s) sent to %s", data.State, utils.MaskID(data.Number))
 
 	return ts.String(), nil
 }

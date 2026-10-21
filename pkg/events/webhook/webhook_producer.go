@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ func (p *webhookProducer) sendWebhookWithRetry(url string, body []byte, maxRetri
 	for i := 0; i < maxRetries; i++ {
 		err, responseBody, statusCode := p.sendWebhook(url, body, userID)
 		if err == nil {
-			p.loggerWrapper.GetLogger(userID).LogInfo("[%s] webhook sent successfully - url: %s, status: %d, response: %s", userID, url, statusCode, string(responseBody))
+			p.loggerWrapper.GetLogger(userID).LogInfo("[%s] webhook sent successfully - host: %s, status: %d, response_bytes: %d", userID, webhookHost(url), statusCode, len(responseBody))
 			return
 		}
 		p.loggerWrapper.GetLogger(userID).LogWarn("[%s] webhook failed - url: %s, attempt: %d, error: %v", userID, url, i+1, err)
@@ -94,4 +95,14 @@ func (p *webhookProducer) sendWebhook(url string, body []byte, userID string) (e
 // CreateGlobalQueues não faz nada para webhook producer
 func (p *webhookProducer) CreateGlobalQueues() error {
 	return nil
+}
+
+// webhookHost returns only scheme://host of a webhook URL for logs: paths and query strings
+// often carry tokens.
+func webhookHost(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "invalid-url"
+	}
+	return u.Scheme + "://" + u.Host
 }
