@@ -88,6 +88,11 @@ type engineCall struct {
 
 	// KRIONIX PATCH: relay the media loop was started on (to detect later relay changes).
 	mediaRelayName string
+	// KRIONIX PATCH: Answer was called (inbound). Early media must not move the call out of
+	// Ringing before that.
+	answered bool
+	// KRIONIX PATCH: inbound audio already decoded (possibly before Answer).
+	audioFlowing bool
 }
 
 // mark emits a sanitized milestone (KRIONIX PATCH). kv are key/value pairs.
@@ -634,6 +639,10 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		e.mark(ev.CallID, "preaccept_failed", "error", err.Error())
 	} else {
 		e.mark(ev.CallID, "preaccept_sent")
+		if e.c.early {
+			// Bind to the relay now, while it rings (the call phase stays Ringing).
+			e.maybeStartMedia(ev.CallID)
+		}
 	}
 
 	if fn := e.c.incomingCallHandler(); fn != nil {
@@ -730,13 +739,23 @@ func (e *engine) answer(c *Call) error {
 	}
 	e.mu.Lock()
 	m.acceptPending = true
+	m.answered = true
 	muteSeen, muteFrom, muteCreator := m.muteSeen, m.muteFrom, m.muteCreator
 	relayKnown := m.relay != nil
+	mediaStarted, audioFlowing := m.started, m.audioFlowing
 	e.mu.Unlock()
-	e.mark(c.id, "answer_called", "mute_v2_already_seen", boolStr(muteSeen), "relay_known", boolStr(relayKnown))
+	e.mark(c.id, "answer_called", "mute_v2_already_seen", boolStr(muteSeen), "relay_known", boolStr(relayKnown),
+		"media_already_started", boolStr(mediaStarted))
 
 	c.setPhase(CallPhaseConnecting)
 	e.maybeStartMedia(c.id)
+	if audioFlowing {
+		// Early media already delivered audio while ringing: the call is live now.
+		c.setPhase(CallPhaseActive)
+		if fn := c.onReadyFn(); fn != nil {
+			fn()
+		}
+	}
 
 	if muteSeen {
 		e.c.log.Info().Str("call_id", c.id).Msg("mute_v2 already received before answer; sending accept now")

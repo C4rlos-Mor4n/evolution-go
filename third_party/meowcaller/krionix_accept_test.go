@@ -237,3 +237,65 @@ func TestMilestonesForAnswerAfterMuteV2(t *testing.T) {
 		}
 	}
 }
+
+// Early media: the relay session starts while ringing but the call stays Ringing (the API
+// only answers Ringing calls) until Answer moves it on.
+func TestEarlyMediaKeepsRingingUntilAnswer(t *testing.T) {
+	shortFallback(t)
+	eng, call, _ := incomingTestEngine(t, true)
+	eng.c.early = true
+	var mu sync.Mutex
+	var mediaStart map[string]string
+	eng.c.milestone = func(_ string, name string, attrs map[string]string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if name == "media_start" {
+			mediaStart = attrs
+		}
+	}
+	eng.mu.Lock()
+	eng.calls[testCallID].started = false // let maybeStartMedia run (no endpoints: no network)
+	eng.mu.Unlock()
+
+	eng.maybeStartMedia(testCallID) // what onOffer does right after the preaccept
+	if got := call.State(); got != CallPhaseRinging {
+		t.Fatalf("early media changed the phase to %v before answer", got)
+	}
+	mu.Lock()
+	if mediaStart["before_answer"] != "true" {
+		t.Fatalf("media_start attrs = %v", mediaStart)
+	}
+	mu.Unlock()
+
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	if got := call.State(); got != CallPhaseConnecting && got != CallPhaseEnded {
+		t.Fatalf("after answer phase = %v, want connecting", got)
+	}
+}
+
+// Audio decoded while ringing must not make the call Active before Answer.
+func TestEarlyAudioIsPromotedOnAnswer(t *testing.T) {
+	shortFallback(t)
+	eng, call, _ := incomingTestEngine(t, true)
+	if eng.markAudioFlowing(testCallID) {
+		t.Fatal("inbound call must not become active before answer")
+	}
+	readyFired := make(chan struct{}, 1)
+	call.OnReady(func() { readyFired <- struct{}{} })
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	if got := call.State(); got != CallPhaseActive {
+		t.Fatalf("after answer with early audio phase = %v, want active", got)
+	}
+	select {
+	case <-readyFired:
+	case <-time.After(time.Second):
+		t.Fatal("OnReady not fired on answer")
+	}
+	if !eng.markAudioFlowing(testCallID) {
+		t.Fatal("answered call must be allowed to become active")
+	}
+}

@@ -36,7 +36,10 @@ type Config struct {
 	CallsEnabled bool
 	// CallsLogLevel is the level of the sanitized meowcaller log (CALLS_LOG_LEVEL:
 	// error | warn (default) | info).
-	CallsLogLevel        string
+	CallsLogLevel string
+	// CallsEarlyMedia binds inbound calls to the relay while they ring, like real WhatsApp
+	// clients (CALLS_EARLY_MEDIA, default true; set false to bind only on answer).
+	CallsEarlyMedia      bool
 	OsName               string
 	AmqpUrl              string
 	AmqpGlobalEnabled    bool
@@ -407,6 +410,7 @@ func Load() *Config {
 		RerequestFromPhone:   rerequestFromPhone == "true",
 		CallsEnabled:         callsEnabled == "true",
 		CallsLogLevel:        os.Getenv(config_env.CALLS_LOG_LEVEL),
+		CallsEarlyMedia:      os.Getenv(config_env.CALLS_EARLY_MEDIA) != "false",
 		AmqpGlobalEvents:     amqpGlobalEvents,
 		AmqpSpecificEvents:   amqpSpecificEvents,
 		NatsUrl:              natsUrl,

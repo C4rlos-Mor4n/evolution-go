@@ -13,12 +13,22 @@ type config struct {
 	log       zerolog.Logger
 	diag      *diag.Recorder
 	milestone MilestoneFunc
+	early     bool
 }
 
 // MilestoneFunc receives call setup/media milestones (KRIONIX PATCH). attrs only carry
 // event names, booleans, counts, Meta relay names and error text: never JIDs, keys, IPs,
 // SDP or media. It is called synchronously from signaling/media goroutines: keep it cheap.
 type MilestoneFunc func(callID, name string, attrs map[string]string)
+
+// WithEarlyMedia starts the relay media session for an inbound call right after the
+// eager <preaccept> (while it still rings), like real WhatsApp clients do, instead of only
+// when Answer is called (KRIONIX PATCH). The call stays in the Ringing phase until Answer.
+// Without it a call answered seconds later binds to the relay too late: the caller's relay
+// session no longer bridges media and no audio flows in either direction.
+func WithEarlyMedia(enabled bool) Option {
+	return func(c *config) { c.early = enabled }
+}
 
 // WithMilestones registers a sanitized milestone callback (KRIONIX PATCH).
 func WithMilestones(fn MilestoneFunc) Option {

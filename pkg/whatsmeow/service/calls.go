@@ -54,6 +54,7 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 	mc := meowcaller.NewClient(client,
 		meowcaller.WithLogger(meowcallerLogger(w.config.CallsLogLevel)),
 		meowcaller.WithMilestones(w.callMilestoneLogger(instanceID)),
+		meowcaller.WithEarlyMedia(w.config.CallsEarlyMedia),
 	)
 	owner := mc
 	registry.OpenOwner(owner)

@@ -86,6 +86,8 @@ func (e *engine) maybeStartMedia(callID string) {
 		m.mediaRelayName = ep.relayName
 	}
 	mediaRelay := m.mediaRelayName
+	// KRIONIX PATCH: early media (inbound, before Answer) keeps the call Ringing.
+	beforeAnswer := m.direction == CallDirectionIncoming && !m.answered
 	mctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	call := m.call
@@ -99,11 +101,11 @@ func (e *engine) maybeStartMedia(callID string) {
 	inbound := m.direction == CallDirectionIncoming
 	e.mu.Unlock()
 
-	if call != nil {
+	if call != nil && !beforeAnswer {
 		call.setPhase(CallPhaseConnecting)
 	}
 	e.c.log.Info().Str("call_id", callID).Msg("starting media")
-	e.mark(callID, "media_start", "relay", mediaRelay)
+	e.mark(callID, "media_start", "relay", mediaRelay, "before_answer", boolStr(beforeAnswer))
 	go func() {
 		defer clear(callKey)
 		if err := e.runMedia(mctx, callID, call, callKey, selfLID, peerLID, rd, inbound); err != nil {
@@ -1144,13 +1146,30 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			e.mark(callID, "first_audio_decoded", "after_ms", fmt.Sprint(time.Since(mediaStarted).Milliseconds()))
 			e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_in", "call_id": callID})
 			if call != nil {
-				call.setPhase(CallPhaseActive)
-				if fn := call.onReadyFn(); fn != nil {
-					fn()
+				// KRIONIX PATCH: with early media an inbound call may receive audio before
+				// Answer; keep it Ringing and let Answer promote it (see engine.answer).
+				if e.markAudioFlowing(callID) {
+					call.setPhase(CallPhaseActive)
+					if fn := call.onReadyFn(); fn != nil {
+						fn()
+					}
 				}
 			}
 		}
 	}
+}
+
+// markAudioFlowing records that inbound audio is flowing and reports whether the call may
+// become Active now (always, except an inbound call that was not answered yet).
+func (e *engine) markAudioFlowing(callID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := e.calls[callID]
+	if m == nil {
+		return true
+	}
+	m.audioFlowing = true
+	return m.direction != CallDirectionIncoming || m.answered
 }
 
 func prepareWasmRelayStreamSSRCs(
