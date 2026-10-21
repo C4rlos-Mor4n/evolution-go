@@ -9,6 +9,7 @@ import (
 	"time"
 
 	call_registry "github.com/evolution-foundation/evolution-go/pkg/call/registry"
+	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	"github.com/purpshell/meowcaller"
 	"go.mau.fi/whatsmeow"
 )
@@ -35,9 +36,12 @@ const (
 	callTeardownWait = 2 * time.Second
 )
 
-// attachCalling constructs this runtime's meowcaller client when
-// CALLS_ENABLED=true. It must run after whatsmeow.NewClient and before
-// client.Connect (meowcaller installs its raw <call>/<ack> node hooks then).
+// attachCalling constructs this runtime's meowcaller client when both
+// CALLS_ENABLED=true and the instance has calling enabled (callsEnabled, off by
+// default). Instances without it never get meowcaller: no preaccept, no early
+// media, WhatsApp keeps its normal call behaviour on the account's other devices.
+// It must run after whatsmeow.NewClient and before client.Connect (meowcaller
+// installs its raw <call>/<ack> node hooks then).
 //
 // The returned release function (idempotent) unregisters the incoming-call
 // listener, removes every call this runtime registered (closing their media
@@ -45,8 +49,15 @@ const (
 // runtime, so a replaced/killed runtime never leaves calls, streams or media
 // goroutines behind. When calls are disabled nothing is constructed and the
 // release is a no-op.
-func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Client) func() {
-	if w.config == nil || !w.config.CallsEnabled || w.callRegistry == nil {
+func (w whatsmeowService) attachCalling(instance *instance_model.Instance, client *whatsmeow.Client) func() {
+	if w.config == nil || !w.config.CallsEnabled || w.callRegistry == nil || instance == nil {
+		return func() {}
+	}
+	instanceID := instance.Id
+	if w.callingGate != nil {
+		w.callingGate.Set(instanceID, instance.CallsEnabled)
+	}
+	if !instance.CallsEnabled {
 		return func() {}
 	}
 	registry := w.callRegistry
@@ -56,9 +67,13 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 		meowcaller.WithLogger(meowcallerLogger(w.config.CallsLogLevel)),
 		meowcaller.WithMilestones(w.callMilestoneLogger(instanceID)),
 		meowcaller.WithEarlyMedia(w.config.CallsEarlyMedia),
+		// Disabling calling for the instance takes effect on the next offer, without
+		// waiting for the reconnect that detaches meowcaller.
+		meowcaller.WithOfferGate(func(string) bool { return w.callingAllowed(instanceID) }),
 	)
 	owner := mc
 	registry.OpenOwner(owner)
+	w.callingAttached.attach(instanceID, owner)
 
 	mc.OnIncomingCall(func(call *meowcaller.Call) {
 		callID := call.ID()
@@ -104,6 +119,7 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 	var once sync.Once
 	return func() {
 		once.Do(func() {
+			w.callingAttached.detach(instanceID, owner)
 			mc.OnIncomingCall(nil)
 			calls := registry.CloseOwner(owner, "runtime_closed")
 			if len(calls) == 0 {
@@ -113,6 +129,88 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 			hangupCalls(calls, callTeardownWait)
 		})
 	}
+}
+
+// callingAllowed is the offer gate: the persisted per-instance switch as last
+// set on this process (attach or admin toggle).
+func (w whatsmeowService) callingAllowed(instanceID string) bool {
+	if w.config == nil || !w.config.CallsEnabled || w.callingGate == nil {
+		return false
+	}
+	return w.callingGate.Get(instanceID)
+}
+
+// SetCallingGate updates the per-instance switch used by the offer gate. Turning it
+// off stops meowcaller from engaging new offers immediately; turning it on only
+// matters once a reconnect has attached meowcaller to the instance.
+func (w whatsmeowService) SetCallingGate(instanceID string, enabled bool) {
+	if w.callingGate != nil {
+		w.callingGate.Set(instanceID, enabled)
+	}
+}
+
+// CallingRuntimeState is the effective calling state of one instance on this process.
+type CallingRuntimeState struct {
+	// Runtime reports whether the instance has a live WhatsApp runtime.
+	Runtime bool
+	// Attached reports whether meowcaller is installed on that runtime.
+	Attached bool
+	// ActiveCalls counts calls currently registered for the instance.
+	ActiveCalls int
+}
+
+// CallingState reports the instance's runtime calling state.
+func (w whatsmeowService) CallingState(instanceID string) CallingRuntimeState {
+	st := CallingRuntimeState{}
+	if w.myClientPointer != nil {
+		_, st.Runtime = w.myClientPointer.Lookup(instanceID)
+	}
+	st.Attached = w.callingAttached.attached(instanceID)
+	if w.callRegistry != nil {
+		st.ActiveCalls = w.callRegistry.Count(instanceID)
+	}
+	return st
+}
+
+// callingAttachments tracks the meowcaller owner installed per instance, so a
+// replaced runtime's release never clears the attachment of its successor.
+type callingAttachments struct {
+	mu     sync.Mutex
+	owners map[string]any
+}
+
+func newCallingAttachments() *callingAttachments {
+	return &callingAttachments{owners: map[string]any{}}
+}
+
+func (a *callingAttachments) attach(instanceID string, owner any) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.owners[instanceID] = owner
+	a.mu.Unlock()
+}
+
+func (a *callingAttachments) detach(instanceID string, owner any) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.owners[instanceID] == owner {
+		delete(a.owners, instanceID)
+	}
+	a.mu.Unlock()
+}
+
+func (a *callingAttachments) attached(instanceID string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.owners[instanceID]
+	return ok
 }
 
 // markRejectedByMeowcaller records that an auto-rejected offer was already

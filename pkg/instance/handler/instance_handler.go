@@ -31,6 +31,9 @@ type InstanceHandler interface {
 	GetLogs(ctx *gin.Context)
 	GetAdvancedSettings(ctx *gin.Context)
 	UpdateAdvancedSettings(ctx *gin.Context)
+	ListCalling(ctx *gin.Context)
+	SetCalling(ctx *gin.Context)
+	ApplyCalling(ctx *gin.Context)
 }
 
 type instanceHandler struct {
@@ -645,6 +648,9 @@ func (h *instanceHandler) UpdateAdvancedSettings(c *gin.Context) {
 	var settings instance_model.AdvancedSettings
 	if err := bindInstanceSettingsJSON(c, &settings); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !h.guardCallsEnabled(c, instanceId, &settings) {
 		return
 	}
 	err := h.instanceService.UpdateAdvancedSettings(instanceId, &settings)

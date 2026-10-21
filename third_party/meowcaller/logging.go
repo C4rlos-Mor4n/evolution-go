@@ -14,6 +14,7 @@ type config struct {
 	diag      *diag.Recorder
 	milestone MilestoneFunc
 	early     bool
+	offerGate func(callID string) bool
 }
 
 // MilestoneFunc receives call setup/media milestones (KRIONIX PATCH). attrs only carry
@@ -28,6 +29,14 @@ type MilestoneFunc func(callID, name string, attrs map[string]string)
 // session no longer bridges media and no audio flows in either direction.
 func WithEarlyMedia(enabled bool) Option {
 	return func(c *config) { c.early = enabled }
+}
+
+// WithOfferGate is consulted for every inbound 1:1 offer before anything is sent
+// (KRIONIX PATCH). When it returns false the offer is left alone: no <preaccept>, no
+// relay/media session and no OnIncomingCall, so the account's other devices handle the
+// call exactly as if meowcaller were not installed. Group offers are not affected.
+func WithOfferGate(fn func(callID string) bool) Option {
+	return func(c *config) { c.offerGate = fn }
 }
 
 // WithMilestones registers a sanitized milestone callback (KRIONIX PATCH).

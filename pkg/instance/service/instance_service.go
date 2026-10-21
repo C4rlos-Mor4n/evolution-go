@@ -45,6 +45,10 @@ type InstanceService interface {
 	GetLogs(instanceId string, startDate, endDate time.Time, level string, limit int) ([]logger_wrapper.LogEntry, error)
 	GetAdvancedSettings(instanceId string) (*instance_model.AdvancedSettings, error)
 	UpdateAdvancedSettings(instanceId string, settings *instance_model.AdvancedSettings) error
+	ListCalling() ([]CallingInstanceStatus, error)
+	GetCalling(instanceId string) (CallingInstanceStatus, error)
+	SetCalling(instanceId string, enabled bool, actor string, from string) (CallingInstanceStatus, error)
+	ApplyCalling(instanceId string, force bool, from string) (CallingInstanceStatus, error)
 }
 
 type instances struct {
@@ -207,6 +211,14 @@ func (i instances) Create(data *CreateStruct) (*instance_model.Instance, error) 
 		}
 		if data.AdvancedSettings.IgnoreStatus != nil {
 			instance.IgnoreStatus = *data.AdvancedSettings.IgnoreStatus
+		}
+		// /instance/create is global-API-key only, so an explicit callsEnabled here is
+		// an administrative decision (audited like the calling switch).
+		if data.AdvancedSettings.CallsEnabled != nil && *data.AdvancedSettings.CallsEnabled {
+			now := time.Now().UTC()
+			instance.CallsEnabled = true
+			instance.CallsEnabledChangedAt = &now
+			instance.CallsEnabledChangedBy = "global_api_key:create"
 		}
 	}
 

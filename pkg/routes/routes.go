@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/evolution-foundation/evolution-go/docs"
 	call_handler "github.com/evolution-foundation/evolution-go/pkg/call/handler"
+	calling_ui "github.com/evolution-foundation/evolution-go/pkg/calling/ui"
 	chat_handler "github.com/evolution-foundation/evolution-go/pkg/chat/handler"
 	community_handler "github.com/evolution-foundation/evolution-go/pkg/community/handler"
 	group_handler "github.com/evolution-foundation/evolution-go/pkg/group/handler"
@@ -76,6 +77,18 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 	})
 
 	eng.GET("/server/ok", r.serverHandler.ServerOk)
+
+	// Per-instance calling switch (KRIONIX). The page is static; the API needs the global key.
+	eng.GET("/calling/ui", calling_ui.Handler)
+	callingRoutes := eng.Group("/calling")
+	{
+		callingRoutes.Use(r.authMiddleware.AuthAdmin)
+		{
+			callingRoutes.GET("/instances", r.instanceHandler.ListCalling)
+			callingRoutes.PUT("/instances/:instanceId", r.instanceHandler.SetCalling)
+			callingRoutes.POST("/instances/:instanceId/apply", r.instanceHandler.ApplyCalling)
+		}
+	}
 
 	routes := eng.Group("/instance")
 	{

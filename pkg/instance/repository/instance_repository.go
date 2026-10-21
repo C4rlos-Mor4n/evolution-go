@@ -3,6 +3,7 @@ package instance_repository
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	instance_model "github.com/evolution-foundation/evolution-go/pkg/instance/model"
 	"github.com/gomessguii/logger"
@@ -34,6 +35,8 @@ type InstanceRepository interface {
 	Delete(instanceId string) error
 	GetAdvancedSettings(instanceId string) (*instance_model.AdvancedSettings, error)
 	UpdateAdvancedSettings(instanceId string, settings *instance_model.AdvancedSettings) error
+	ListCalling() ([]*instance_model.Instance, error)
+	SetCallsEnabled(instanceId string, enabled bool, changedBy string, at time.Time) error
 }
 
 type instanceRepository struct {
@@ -190,7 +193,7 @@ func (i *instanceRepository) GetAdvancedSettings(instanceId string) (*instance_m
 	}
 
 	var instance instance_model.Instance
-	err := i.db.Select("always_online, reject_call, msg_reject_call, read_messages, ignore_groups, ignore_status").
+	err := i.db.Select("always_online, reject_call, msg_reject_call, read_messages, ignore_groups, ignore_status, calls_enabled").
 		Where("id = ?", instanceId).First(&instance).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -206,6 +209,7 @@ func (i *instanceRepository) GetAdvancedSettings(instanceId string) (*instance_m
 		ReadMessages:  instance_model.BoolPtr(instance.ReadMessages),
 		IgnoreGroups:  instance_model.BoolPtr(instance.IgnoreGroups),
 		IgnoreStatus:  instance_model.BoolPtr(instance.IgnoreStatus),
+		CallsEnabled:  instance_model.BoolPtr(instance.CallsEnabled),
 	}
 
 	return settings, nil
@@ -259,6 +263,35 @@ func buildAdvancedSettingsUpdates(settings *instance_model.AdvancedSettings) map
 		updates["msg_reject_call"] = *settings.MsgRejectCall
 	}
 	return updates
+}
+
+// ListCalling returns every instance with only the fields the calling admin needs
+// (never tokens, JIDs or QR codes).
+func (i *instanceRepository) ListCalling() ([]*instance_model.Instance, error) {
+	var instances []*instance_model.Instance
+	err := i.db.Select("id, name, connected, client_name, reject_call, calls_enabled, calls_enabled_changed_at, calls_enabled_changed_by").
+		Order("name").Find(&instances).Error
+	return instances, err
+}
+
+// SetCallsEnabled persists the per-instance calling switch with its audit fields.
+// Advanced-settings updates never write calls_enabled.
+func (i *instanceRepository) SetCallsEnabled(instanceId string, enabled bool, changedBy string, at time.Time) error {
+	if _, err := uuid.Parse(instanceId); err != nil {
+		return fmt.Errorf("invalid UUID format: %v", err)
+	}
+	result := i.db.Model(&instance_model.Instance{}).Where("id = ?", instanceId).Updates(map[string]interface{}{
+		"calls_enabled":            enabled,
+		"calls_enabled_changed_at": at,
+		"calls_enabled_changed_by": changedBy,
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return instance_model.ErrInstanceNotFound
+	}
+	return nil
 }
 
 func NewInstanceRepository(db *gorm.DB) InstanceRepository {

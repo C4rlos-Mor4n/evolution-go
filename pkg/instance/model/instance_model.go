@@ -37,6 +37,13 @@ type Instance struct {
 	ReadMessages  bool   `json:"readMessages" gorm:"default:false"`
 	IgnoreGroups  bool   `json:"ignoreGroups" gorm:"default:false"`
 	IgnoreStatus  bool   `json:"ignoreStatus" gorm:"default:false"`
+
+	// Calling (KRIONIX): answer inbound WhatsApp calls of this instance through
+	// meowcaller (also needs CALLS_ENABLED=true). Off by default; only the global
+	// API key can change it (PUT /calling/instances/:instanceId).
+	CallsEnabled          bool       `json:"callsEnabled" gorm:"default:false"`
+	CallsEnabledChangedAt *time.Time `json:"callsEnabledChangedAt,omitempty"`
+	CallsEnabledChangedBy string     `json:"callsEnabledChangedBy,omitempty" gorm:"default:''"`
 }
 
 // AdvancedSettings representa as configurações avançadas de uma instância.
@@ -48,6 +55,9 @@ type AdvancedSettings struct {
 	ReadMessages  *bool   `json:"readMessages"`
 	IgnoreGroups  *bool   `json:"ignoreGroups"`
 	IgnoreStatus  *bool   `json:"ignoreStatus"`
+	// CallsEnabled is reported by GET; an instance-token PUT may only echo the
+	// current value (changing it needs the global API key).
+	CallsEnabled *bool `json:"callsEnabled"`
 }
 
 func (m *Instance) BeforeCreate(tx *gorm.DB) (err error) {

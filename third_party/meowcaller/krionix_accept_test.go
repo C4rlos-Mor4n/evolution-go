@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 type sentNodes struct {
@@ -412,5 +413,44 @@ func TestAudioAllowedOnlyAfterAnswer(t *testing.T) {
 	eng.mu.Unlock()
 	if !eng.audioAllowed("OUT1") {
 		t.Fatal("outgoing call audio must always be allowed")
+	}
+}
+
+// KRIONIX PATCH: a closed offer gate (calling disabled for the instance) must leave the
+// offer alone: nothing sent, nothing registered, OnIncomingCall never fired.
+func TestClosedOfferGateLeavesCallUntouched(t *testing.T) {
+	sent := &sentNodes{}
+	gateCalls := 0
+	incoming := 0
+	c := &Client{log: silentLogFn, offerGate: func(callID string) bool {
+		gateCalls++
+		if callID != testCallID {
+			t.Errorf("gate got call id %q", callID)
+		}
+		return false
+	}}
+	c.onIncomingCall = func(*Call) { incoming++ }
+	eng := &engine{c: c, calls: map[string]*engineCall{}}
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		sent.mu.Lock()
+		sent.nodes = append(sent.nodes, node)
+		sent.mu.Unlock()
+		return nil
+	}
+	c.eng = eng
+	ev := &events.CallOffer{
+		BasicCallMeta: types.BasicCallMeta{From: testDevice, CallCreator: testCaller, CallID: testCallID},
+		Data: &waBinary.Node{Tag: "offer", Attrs: waBinary.Attrs{"call-id": testCallID, "call-creator": testCaller},
+			Content: []waBinary.Node{{Tag: "audio", Attrs: waBinary.Attrs{"enc": "opus", "rate": "16000"}}}},
+	}
+	eng.onOffer(ev)
+	if gateCalls != 1 {
+		t.Fatalf("gate consulted %d times, want 1", gateCalls)
+	}
+	if len(sent.nodes) != 0 {
+		t.Fatalf("sent %d node(s) for a gated offer, want 0", len(sent.nodes))
+	}
+	if len(eng.calls) != 0 || incoming != 0 {
+		t.Fatalf("gated offer registered calls=%d incoming=%d, want 0/0", len(eng.calls), incoming)
 	}
 }

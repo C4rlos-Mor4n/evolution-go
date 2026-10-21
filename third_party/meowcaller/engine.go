@@ -574,6 +574,12 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		return
 	}
 
+	// KRIONIX PATCH: calling disabled for this account → stay out of the call entirely.
+	if gate := e.c.offerGate; gate != nil && !gate(ev.CallID) {
+		e.c.log.Info().Str("call_id", ev.CallID).Msg("offer gate closed; leaving the call to the account's other devices")
+		return
+	}
+
 	callKey, err := decryptInboundCallKey(context.Background(), e.c.wa, ev)
 	if err != nil {
 		e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("decrypt callKey failed")

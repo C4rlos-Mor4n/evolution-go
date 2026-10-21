@@ -287,6 +287,13 @@ func (r *Registry[C]) Expire(ringTTL, maxAge time.Duration) []Expired[C] {
 	return out
 }
 
+// Count returns the number of calls registered for instanceID.
+func (r *Registry[C]) Count(instanceID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.countLocked(instanceID)
+}
+
 // Len returns the number of registered calls.
 func (r *Registry[C]) Len() int {
 	r.mu.Lock()
