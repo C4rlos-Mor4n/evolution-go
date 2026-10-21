@@ -1,6 +1,6 @@
 FROM golang:1.26.9-alpine AS build
 
-RUN apk update && apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev
+RUN apk update && apk add --no-cache git build-base libjpeg-turbo-dev libwebp-dev opus-dev pkgconf
 
 WORKDIR /build
 
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=1 go build -ldflags "-X main.version=${VERSION}" -o server ./cmd
 FROM alpine:3.19.1 AS final
 
 # poppler-utils provides pdftoppm, used to rasterize PDF page 1 for /send/media document thumbnails
-RUN apk update && apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler-utils
+RUN apk update && apk add --no-cache tzdata ffmpeg libjpeg-turbo libwebp poppler-utils opus
 
 WORKDIR /app
 

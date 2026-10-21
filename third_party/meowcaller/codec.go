@@ -33,3 +33,8 @@ func selectAudioCodec(vs *signaling.VoipSettings) AudioCodec {
 	}
 	return AudioCodecOpus
 }
+
+// audioFrameEncoder turns one 60 ms PCM frame into a wire payload (MLow or Opus).
+type audioFrameEncoder interface {
+	Encode(pcm []float32) ([]byte, error)
+}

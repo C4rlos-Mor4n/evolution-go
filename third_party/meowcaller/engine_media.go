@@ -16,6 +16,7 @@ import (
 
 	"github.com/purpshell/meowcaller/diag"
 	"github.com/purpshell/meowcaller/mlow"
+	"github.com/purpshell/meowcaller/opus"
 	"github.com/purpshell/meowcaller/relay"
 	"github.com/purpshell/meowcaller/rtp"
 	"github.com/purpshell/meowcaller/srtp"
@@ -337,25 +338,48 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		"participant_id": selfParticipantID,
 	})
 
-	enc := mlow.NewMlowEncoder(mlow.WithLogger(log))
 	e.mu.Lock()
 	m := e.calls[callID]
 	audioReceivers := (*participantReceiveRegistry)(nil)
 	var groupMode atomic.Bool
+	codec := AudioCodecMlow
 	if m != nil {
 		audioReceivers = m.groupReceivers
 		groupMode.Store(m.group)
+		codec = m.codec
 	}
 	e.mu.Unlock()
+	// KRIONIX PATCH: use the negotiated codec in both directions. An Opus-negotiated call
+	// carries RFC 6716 Opus in the same payload type; MLow in either direction is noise or
+	// silence to the other side.
+	var enc audioFrameEncoder = mlow.NewMlowEncoder(mlow.WithLogger(log))
+	newDecoder := func() participantAudioDecoder {
+		return mlow.NewMlowDecoder(mlow.WithLogger(log))
+	}
+	if codec == AudioCodecOpus && !groupMode.Load() {
+		oenc, err := opus.NewEncoder(opus.DefaultBitrate)
+		if err != nil {
+			e.mark(callID, "codec_init_failed", "codec", codec.String(), "error", err.Error())
+			return err
+		}
+		enc = oenc
+		newDecoder = func() participantAudioDecoder {
+			dec, err := opus.NewDecoder()
+			if err != nil {
+				log.Error().Err(err).Msg("opus decoder unavailable; inbound audio will be silent")
+				return mlow.NewMlowDecoder(mlow.WithLogger(log))
+			}
+			return dec
+		}
+	}
+	e.mark(callID, "media_codec", "codec", codec.String())
 	if audioReceivers == nil {
 		audioReceivers, err = newParticipantReceiveRegistry(
 			callID,
 			callKey,
 			selfLID,
 			peerLID,
-			func() participantAudioDecoder {
-				return mlow.NewMlowDecoder(mlow.WithLogger(log))
-			},
+			newDecoder,
 			WithLogger(log),
 		)
 		if err != nil {
