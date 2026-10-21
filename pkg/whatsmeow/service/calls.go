@@ -23,8 +23,9 @@ func NewCallRegistry() *CallRegistry {
 
 const (
 	// callRingTTL drops calls that were never answered (their terminate stanza
-	// was lost). WhatsApp stops ringing well before this.
-	callRingTTL = 3 * time.Minute
+	// was lost). WhatsApp stops ringing after ~60s; with early media an unanswered
+	// call keeps a relay session open, so keep this bound tight.
+	callRingTTL = 90 * time.Second
 	// callMaxDuration hangs up answered calls that are still registered after
 	// this long; it is only a safety net against leaked calls.
 	callMaxDuration = 6 * time.Hour

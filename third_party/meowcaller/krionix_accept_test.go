@@ -299,3 +299,118 @@ func TestEarlyAudioIsPromotedOnAnswer(t *testing.T) {
 		t.Fatal("answered call must be allowed to become active")
 	}
 }
+
+// Deterministic reproduction of the race reported in review: the media goroutine decodes the
+// first audio right after answer() set answered=true, promotes the call to Active, and only
+// then answer() moves the phase. The call must stay Active and OnReady fire exactly once.
+func TestAnswerRaceMediaPromotesFirst(t *testing.T) {
+	shortFallback(t)
+	eng, call, _ := incomingTestEngine(t, true)
+	var mu sync.Mutex
+	var phases []CallPhase
+	ready := 0
+	call.OnStateChange(func(p CallPhase) {
+		mu.Lock()
+		phases = append(phases, p)
+		mu.Unlock()
+	})
+	call.OnReady(func() {
+		mu.Lock()
+		ready++
+		mu.Unlock()
+	})
+	eng.afterAnswerMarkHook = func() {
+		// what the media goroutine does on its first decoded audio frame
+		if eng.markAudioFlowing(testCallID) {
+			call.promoteActive()
+		}
+	}
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	if got := call.State(); got != CallPhaseActive {
+		t.Fatalf("phase = %v, want active (answer must not regress it to connecting)", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ready != 1 {
+		t.Fatalf("OnReady fired %d times, want 1", ready)
+	}
+	for i, p := range phases {
+		if p == CallPhaseConnecting && i > 0 && phases[i-1] == CallPhaseActive {
+			t.Fatalf("phase went back from active to connecting: %v", phases)
+		}
+	}
+}
+
+// Early audio before answer AND a concurrent promotion during answer: still one OnReady.
+func TestOnReadyOnceWhenBothPathsPromote(t *testing.T) {
+	shortFallback(t)
+	eng, call, _ := incomingTestEngine(t, true)
+	if eng.markAudioFlowing(testCallID) { // audio while ringing: not promoted yet
+		t.Fatal("must not promote before answer")
+	}
+	var mu sync.Mutex
+	ready := 0
+	call.OnReady(func() {
+		mu.Lock()
+		ready++
+		mu.Unlock()
+	})
+	eng.afterAnswerMarkHook = func() {
+		if eng.markAudioFlowing(testCallID) {
+			call.promoteActive()
+		}
+	}
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if call.State() != CallPhaseActive || ready != 1 {
+		t.Fatalf("phase=%v ready=%d, want active/1", call.State(), ready)
+	}
+}
+
+// Concurrent promotions from many goroutines: one OnReady, final Active (race detector).
+func TestPromoteActiveConcurrent(t *testing.T) {
+	call := &Call{id: testCallID, phase: CallPhaseConnecting}
+	var mu sync.Mutex
+	ready := 0
+	call.OnReady(func() { mu.Lock(); ready++; mu.Unlock() })
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); call.promoteActive() }()
+	}
+	wg.Wait()
+	if call.State() != CallPhaseActive || ready != 1 {
+		t.Fatalf("phase=%v ready=%d, want active/1", call.State(), ready)
+	}
+	call.setPhase(CallPhaseEnded)
+	call.promoteActive() // never resurrects an ended call
+	if call.State() != CallPhaseEnded {
+		t.Fatal("promoteActive resurrected an ended call")
+	}
+}
+
+// Audio of an inbound call is never delivered (in or out) before Answer.
+func TestAudioAllowedOnlyAfterAnswer(t *testing.T) {
+	shortFallback(t)
+	eng, call, _ := incomingTestEngine(t, true)
+	if eng.audioAllowed(testCallID) {
+		t.Fatal("inbound audio allowed before answer")
+	}
+	if err := eng.answer(call); err != nil {
+		t.Fatal(err)
+	}
+	if !eng.audioAllowed(testCallID) {
+		t.Fatal("inbound audio not allowed after answer")
+	}
+	eng.mu.Lock()
+	eng.calls["OUT1"] = &engineCall{direction: CallDirectionOutgoing}
+	eng.mu.Unlock()
+	if !eng.audioAllowed("OUT1") {
+		t.Fatal("outgoing call audio must always be allowed")
+	}
+}

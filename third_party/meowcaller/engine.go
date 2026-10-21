@@ -30,7 +30,8 @@ import (
 // sink). This is where the orchestration formerly hand-rolled in examples/cli has been
 // lifted to; Client and Call are the public face over it.
 type engine struct {
-	c *Client
+	afterAnswerMarkHook func() // KRIONIX PATCH: test-only interleaving point (nil in production)
+	c                   *Client
 
 	mu              sync.Mutex
 	calls           map[string]*engineCall // keyed by call-id
@@ -632,8 +633,12 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 	// been preaccepted.
 	e.mu.Lock()
 	relayInOffer := e.calls[ev.CallID] != nil && e.calls[ev.CallID].relay != nil
+	codec := ""
+	if cur := e.calls[ev.CallID]; cur != nil {
+		codec = cur.codec.String()
+	}
 	e.mu.Unlock()
-	e.mark(ev.CallID, "offer_received", "relay_in_offer", boolStr(relayInOffer), "video", boolStr(isVideo))
+	e.mark(ev.CallID, "offer_received", "relay_in_offer", boolStr(relayInOffer), "video", boolStr(isVideo), "codec", codec)
 	if err := e.sendPreaccept(ev.CallID, ev.From, ev.CallCreator, isVideo); err != nil {
 		e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("preaccept failed")
 		e.mark(ev.CallID, "preaccept_failed", "error", err.Error())
@@ -744,17 +749,19 @@ func (e *engine) answer(c *Call) error {
 	relayKnown := m.relay != nil
 	mediaStarted, audioFlowing := m.started, m.audioFlowing
 	e.mu.Unlock()
+	if hook := e.afterAnswerMarkHook; hook != nil {
+		hook() // tests only: interleave the media goroutine here
+	}
 	e.mark(c.id, "answer_called", "mute_v2_already_seen", boolStr(muteSeen), "relay_known", boolStr(relayKnown),
 		"media_already_started", boolStr(mediaStarted))
 
-	c.setPhase(CallPhaseConnecting)
+	// Only Ringing -> Connecting: if the media goroutine already promoted the call to Active
+	// (audio decoded right after answered=true), it must not go back to Connecting.
+	c.advancePhase(CallPhaseConnecting, CallPhaseRinging)
 	e.maybeStartMedia(c.id)
 	if audioFlowing {
 		// Early media already delivered audio while ringing: the call is live now.
-		c.setPhase(CallPhaseActive)
-		if fn := c.onReadyFn(); fn != nil {
-			fn()
-		}
+		c.promoteActive()
 	}
 
 	if muteSeen {

@@ -21,6 +21,7 @@ type Call struct {
 	player                    *Player
 	sink                      AudioSink
 	onReady                   func()
+	readyNotified             bool // KRIONIX PATCH: OnReady fired (exactly once)
 	onEnd                     func(reason string)
 	onState                   func(CallPhase)
 	onPeerAccept              func()

@@ -102,7 +102,7 @@ func (e *engine) maybeStartMedia(callID string) {
 	e.mu.Unlock()
 
 	if call != nil && !beforeAnswer {
-		call.setPhase(CallPhaseConnecting)
+		call.advancePhase(CallPhaseConnecting, preLivePhases...)
 	}
 	e.c.log.Info().Str("call_id", callID).Msg("starting media")
 	e.mark(callID, "media_start", "relay", mediaRelay, "before_answer", boolStr(beforeAnswer))
@@ -469,6 +469,24 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// the relay never answers our allocate.
 	var relayRx atomic.Uint64
 
+	// KRIONIX PATCH: count-only media stats, every 10s and when media ends, so a stalled
+	// direction is visible (e.g. relay alive but no peer RTP after Answer, or RTP arriving
+	// with a payload type that is silently dropped).
+	var stats mediaStats
+	go func() {
+		ticker := time.NewTicker(mediaStatsInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				e.emitMediaStats(callID, "periodic", &stats, relayRx.Load())
+			}
+		}
+	}()
+	defer func() { e.emitMediaStats(callID, "final", &stats, relayRx.Load()) }()
+
 	// Inbound calls are torn down by the caller within ~400ms if the relay bind never
 	// comes alive; check at 400ms and 900ms and say so explicitly.
 	go func() {
@@ -586,9 +604,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			case <-ticker.C:
 			}
 			frame := silence
-			if player, _ := callPlayerSink(call); player != nil {
-				if f := player.nextFrame(); f != nil {
-					frame = f
+			// KRIONIX PATCH: before an inbound call is answered (early media) only silence is
+			// sent: nothing the client/agent plays reaches the caller until Answer.
+			if e.audioAllowed(callID) {
+				if player, _ := callPlayerSink(call); player != nil {
+					if f := player.nextFrame(); f != nil {
+						frame = f
+					}
 				}
 			}
 			payload, err := enc.Encode(frame)
@@ -606,6 +628,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if _, err := ch.Send(packet); err != nil {
 				return
 			}
+			stats.rtpTx.Add(1)
 			if txCount++; txCount == 1 {
 				log.Info().Int("bytes", len(packet)).Msg("first RTP sent to relay, outbound media flowing")
 				e.mark(callID, "first_rtp_sent")
@@ -920,6 +943,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		case relay.RelayPacketOther:
 			continue
 		}
+		stats.rtpRx.Add(1)
 		if rtpSeen++; rtpSeen == 1 {
 			log.Info().Int("bytes", n).Msg("first RTP-classified packet from relay, relay is bridging the peer's media")
 			e.mark(callID, "first_rtp_received", "after_ms", fmt.Sprint(time.Since(mediaStarted).Milliseconds()))
@@ -1089,6 +1113,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			continue
 		}
 		if kind != mediaPayloadAudio {
+			stats.unknownPayload.Add(1)
+			stats.lastUnknownPT.Store(uint32(vh.PayloadType))
 			log.Debug().Uint8("payload_type", vh.PayloadType).Uint32("ssrc", vh.Ssrc).Msg("dropping unknown RTP payload")
 			e.c.diag.Emit("rtp", map[string]any{
 				"event": "unknown_payload", "pt": vh.PayloadType, "ssrc": vh.Ssrc,
@@ -1098,6 +1124,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		}
 		audio, ok := audioReceivers.DecodeAudio(pkt)
 		if !ok {
+			stats.decryptFailed.Add(1)
 			if unprotectFail++; unprotectFail == 1 {
 				log.Warn().Uint32("ssrc", vh.Ssrc).Int("bytes", n).Msg("audio RTP did not match an authenticated active participant")
 				e.mark(callID, "audio_decrypt_failed")
@@ -1119,6 +1146,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			"seq": vh.SequenceNumber, "samples": len(audio.PCM),
 			"pcm_rms": rmsFloat32(audio.PCM), "participant_id": audio.ParticipantID,
 		})
+		stats.audioDecoded.Add(1)
+		// KRIONIX PATCH: early-media audio of an inbound call that was not answered yet is
+		// only used to detect that media flows; it is never played or buffered for the agent.
+		allowed := e.audioAllowed(callID)
+		if !allowed {
+			stats.preAnswerDropped.Add(1)
+		}
 		mixedMode := groupMixing.Load()
 		playoutLocked := false
 		if !mixedMode {
@@ -1126,9 +1160,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			playoutLocked = true
 			mixedMode = groupMixing.Load()
 		}
-		if mixedMode {
+		switch {
+		case !allowed:
+			// not answered yet: never played or buffered (counted in preAnswerDropped)
+		case mixedMode:
 			audioMixer.Add(audio.ParticipantID, audio.PCM)
-		} else {
+		default:
 			_, sink := callPlayerSink(call)
 			playoutStarted, playoutErr := audioPlayout.Push(audio.Timestamp, audio.PCM, sink)
 			if playoutErr != nil {
@@ -1149,10 +1186,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				// KRIONIX PATCH: with early media an inbound call may receive audio before
 				// Answer; keep it Ringing and let Answer promote it (see engine.answer).
 				if e.markAudioFlowing(callID) {
-					call.setPhase(CallPhaseActive)
-					if fn := call.onReadyFn(); fn != nil {
-						fn()
-					}
+					call.promoteActive()
 				}
 			}
 		}
