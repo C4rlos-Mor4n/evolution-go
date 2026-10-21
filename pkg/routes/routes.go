@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/evolution-foundation/evolution-go/docs"
 	call_handler "github.com/evolution-foundation/evolution-go/pkg/call/handler"
-	calling_ui "github.com/evolution-foundation/evolution-go/pkg/calling/ui"
+	"github.com/evolution-foundation/evolution-go/pkg/calling/managerext"
 	chat_handler "github.com/evolution-foundation/evolution-go/pkg/chat/handler"
 	community_handler "github.com/evolution-foundation/evolution-go/pkg/community/handler"
 	group_handler "github.com/evolution-foundation/evolution-go/pkg/group/handler"
@@ -68,23 +68,21 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 	eng.Static("/assets", "./manager/dist/assets")
 
 	// Ajuste nas rotas do manager para suportar client-side routing do React
-	eng.GET("/manager/*any", func(c *gin.Context) {
-		c.File("manager/dist/index.html")
-	})
-
-	eng.GET("/manager", func(c *gin.Context) {
-		c.File("manager/dist/index.html")
-	})
+	// manager/dist is the untouched upstream build; managerext injects the KRIONIX
+	// calling card script into index.html and serves that script.
+	serveManager := managerext.ServeManager("manager/dist/index.html")
+	eng.GET("/manager/*any", serveManager)
+	eng.GET("/manager", serveManager)
 
 	eng.GET("/server/ok", r.serverHandler.ServerOk)
 
-	// Per-instance calling switch (KRIONIX). The page is static; the API needs the global key.
-	eng.GET("/calling/ui", calling_ui.Handler)
+	// Per-instance calling switch (KRIONIX), global API key only.
 	callingRoutes := eng.Group("/calling")
 	{
 		callingRoutes.Use(r.authMiddleware.AuthAdmin)
 		{
 			callingRoutes.GET("/instances", r.instanceHandler.ListCalling)
+			callingRoutes.GET("/instances/:instanceId", r.instanceHandler.GetCalling)
 			callingRoutes.PUT("/instances/:instanceId", r.instanceHandler.SetCalling)
 			callingRoutes.POST("/instances/:instanceId/apply", r.instanceHandler.ApplyCalling)
 		}

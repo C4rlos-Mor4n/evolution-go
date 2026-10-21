@@ -32,6 +32,7 @@ type InstanceHandler interface {
 	GetAdvancedSettings(ctx *gin.Context)
 	UpdateAdvancedSettings(ctx *gin.Context)
 	ListCalling(ctx *gin.Context)
+	GetCalling(ctx *gin.Context)
 	SetCalling(ctx *gin.Context)
 	ApplyCalling(ctx *gin.Context)
 }

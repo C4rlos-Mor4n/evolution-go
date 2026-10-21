@@ -34,6 +34,28 @@ func (h *instanceHandler) ListCalling(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"globalCallsEnabled": globalEnabled, "instances": list})
 }
 
+// GetCalling returns one instance's calling switch (global API key).
+// @Summary Get the calling switch of one instance
+// @Tags Calling
+// @Produce json
+// @Param instanceId path string true "Instance ID"
+// @Success 200 {object} instance_service.CallingInstanceStatus
+// @Failure 401 {object} gin.H "Not authorized"
+// @Failure 404 {object} gin.H "Instance not found"
+// @Router /calling/instances/{instanceId} [get]
+func (h *instanceHandler) GetCalling(c *gin.Context) {
+	instanceId, ok := callingInstanceID(c)
+	if !ok {
+		return
+	}
+	st, err := h.instanceService.GetCalling(instanceId)
+	if err != nil {
+		writeCallingError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, st)
+}
+
 // SetCalling turns calling on or off for one instance (global API key).
 // @Summary Enable or disable calling for one instance
 // @Description Disabling takes effect on the next incoming call. Enabling needs POST /calling/instances/{instanceId}/apply (reconnects only that instance).
