@@ -2822,7 +2822,7 @@ func (s *sendService) SendMessage(instance *instance_model.Instance, msg *waE2E.
 
 	recipient.User = strings.ReplaceAll(recipient.User, "+", "")
 
-	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Sending message to %s with ID %s", instance.Id, recipient.String(), message)
+	s.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Sending message to %s with ID %s", instance.Id, utils.MaskID(recipient.String()), message)
 
 	// Preparar extra parameters para o envio
 	sendExtra := whatsmeow.SendRequestExtra{ID: message}

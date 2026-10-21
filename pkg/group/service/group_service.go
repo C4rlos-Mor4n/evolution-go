@@ -625,7 +625,7 @@ func (g *groupService) UpdateGroupRequestParticipants(data *UpdateGroupRequestPa
 	for _, participant := range data.Participants {
 		participantJID, ok := utils.ParseJID(participant)
 		if !ok {
-			g.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating participant jid: %s", instance.Id, participant)
+			g.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating participant jid: %s", instance.Id, utils.MaskID(fmt.Sprint(participant)))
 			return nil, errors.New("invalid participant jid: " + participant)
 		}
 		participants = append(participants, participantJID)

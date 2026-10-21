@@ -414,7 +414,7 @@ func (w whatsmeowService) ForceUpdateJid(instanceId string, number string) error
 			if err != nil {
 				w.loggerWrapper.GetLogger(instanceId).LogError("[%s] Error updating instance: %v", instanceId, err)
 			}
-			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Updated instance with latest JID: %s (session: %d)", instanceId, latestJid, latestSession)
+			w.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Updated instance with latest JID: %s (session: %d)", instanceId, utils.MaskID(latestJid), latestSession)
 		}
 	}
 
@@ -525,7 +525,7 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	if cd.Instance.Jid != "" {
 		jid, _ := utils.ParseJID(cd.Instance.Jid)
-		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Jid found. Getting device store for jid: %s", cd.Instance.Id, jid)
+		w.loggerWrapper.GetLogger(cd.Instance.Id).LogInfo("[%s] Jid found. Getting device store for jid: %s", cd.Instance.Id, utils.MaskID(jid.String()))
 		deviceStore, err = container.GetDevice(context.Background(), jid)
 		if err != nil {
 			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Erro ao obter device store: %v", cd.Instance.Id, err)
@@ -1574,7 +1574,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		chatStr := evt.Info.Chat.String()
 
 		if strings.Contains(senderStr, "@lid") && strings.Contains(senderAltStr, "@s.whatsapp.net") {
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Detected LID/WhatsApp JID swap case - Sender: %s, SenderAlt: %s", mycli.userID, senderStr, senderAltStr)
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Detected LID/WhatsApp JID swap case - Sender: %s, SenderAlt: %s", mycli.userID, utils.MaskID(senderStr), utils.MaskID(senderAltStr))
 
 			// Limpa os IDs antes de fazer a troca
 			cleanSenderAlt := cleanSenderID(senderAltStr)
@@ -1594,7 +1594,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			}
 
 			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] JID swap completed - New Sender: %s, New SenderAlt: %s, New Chat: %s",
-				mycli.userID, evt.Info.Sender.String(), evt.Info.SenderAlt.String(), evt.Info.Chat.String())
+				mycli.userID, utils.MaskID(evt.Info.Sender.String()), utils.MaskID(evt.Info.SenderAlt.String()), utils.MaskID(evt.Info.Chat.String()))
 		} else {
 			// Comportamento normal: apenas limpa os IDs
 			cleanSender := cleanSenderID(senderStr)
@@ -1621,7 +1621,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				if !evt.Info.IsGroup && mycli.WAClient != nil && mycli.WAClient.Store != nil &&
 					isOwnAccountJID(evt.Info.Chat, mycli.WAClient.Store.GetJID(), mycli.WAClient.Store.GetLID()) {
 					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Outbound multi-device message detected - routing Chat from %s to DestinationJID %s",
-						mycli.userID, evt.Info.Chat.String(), destJID.String())
+						mycli.userID, utils.MaskID(evt.Info.Chat.String()), utils.MaskID(destJID.String()))
 					evt.Info.Chat = destJID
 					chatRerouted = true
 				}
@@ -2168,11 +2168,11 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			return
 		}
 
-		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Receipt received with ID: %s from %s with type %s", mycli.userID, evt.MessageIDs[0], evt.SourceString(), evt.Type)
+		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Receipt received with ID: %s from %s with type %s", mycli.userID, evt.MessageIDs[0], utils.MaskID(evt.SourceString()), evt.Type)
 
 		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
 
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message was read by %s", mycli.userID, evt.SourceString())
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message was read by %s", mycli.userID, utils.MaskID(evt.SourceString()))
 			if evt.Type == types.ReceiptTypeRead {
 				postMap["state"] = "Read"
 				for _, v := range evt.MessageIDs {
@@ -2220,7 +2220,7 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 				mycli.persistMessageAsync(message)
 			}
 
-			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message delivered to %s", mycli.userID, evt.SourceString())
+			mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Message delivered to %s", mycli.userID, utils.MaskID(evt.SourceString()))
 		} else {
 			return
 		}

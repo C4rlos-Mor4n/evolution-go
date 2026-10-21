@@ -74,7 +74,7 @@ func (m *JIDValidationMiddleware) ValidateJIDFields(fieldNames ...string) gin.Ha
 					if normalizedJID != strValue {
 						requestData[fieldName] = normalizedJID
 						modified = true
-						logger.LogDebug("Normalized %s from %s to %s", fieldName, strValue, normalizedJID)
+						logger.LogDebug("Normalized %s from %s to %s", fieldName, utils.MaskID(strValue), utils.MaskID(fmt.Sprint(normalizedJID)))
 					}
 				} else if strValue == "" {
 					c.JSON(http.StatusBadRequest, gin.H{

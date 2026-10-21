@@ -409,7 +409,7 @@ func (u *userService) GetAvatar(data *GetAvatarStruct, instance *instance_model.
 	// and time out (~75s). See utils.CanonicalJID.
 	jid = utils.CanonicalJID(jid)
 
-	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Requesting avatar for JID: %s, Preview: %v", instance.Id, jid, data.Preview)
+	u.loggerWrapper.GetLogger(instance.Id).LogInfo("[%s] Requesting avatar for JID: %s, Preview: %v", instance.Id, utils.MaskID(fmt.Sprint(jid)), data.Preview)
 
 	var pic *types.ProfilePictureInfo
 

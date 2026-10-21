@@ -9,6 +9,7 @@ import (
 
 	logger_wrapper "github.com/evolution-foundation/evolution-go/pkg/logger"
 	"github.com/evolution-foundation/evolution-go/pkg/poll/model"
+	"github.com/evolution-foundation/evolution-go/pkg/utils"
 	"github.com/google/uuid"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -82,7 +83,7 @@ func (s *pollService) autoMigrate() error {
 // SavePollVote salva um voto de enquete no banco de dados (NÃO-INVASIVO)
 func (s *pollService) SavePollVote(ctx context.Context, vote *model.PollVote) error {
 	// Log seguro - não expõe dados sensíveis
-	s.loggerWrapper.GetLogger("poll-service").LogInfo("[POLL] Saving vote for poll %s from %s", vote.PollMessageID, vote.VoterJid)
+	s.loggerWrapper.GetLogger("poll-service").LogInfo("[POLL] Saving vote for poll %s from %s", vote.PollMessageID, utils.MaskID(fmt.Sprint(vote.VoterJid)))
 
 	// Extrair telefone do JID de forma segura
 	if vote.VoterPhone == "" && strings.Contains(vote.VoterJid, "@") {

@@ -483,7 +483,7 @@ func (m *messageService) DeleteMessageEveryone(data *MessageStruct, instance *in
 	// exist and silently ignore the revoke. See utils.CanonicalJID.
 	recipient = utils.CanonicalJID(recipient)
 
-	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Revoking message %s from %s", data.MessageID, recipient)
+	m.loggerWrapper.GetLogger(instance.Id).LogInfo("Revoking message %s from %s", data.MessageID, utils.MaskID(fmt.Sprint(recipient)))
 
 	resp, err := client.SendMessage(
 		context.Background(),
