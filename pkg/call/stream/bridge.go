@@ -76,6 +76,28 @@ type bridge struct {
 
 	droppedOut atomic.Uint64 // frames dropped towards the consumer
 	droppedIn  atomic.Uint64 // consumer samples dropped (buffer full)
+
+	// Diagnostics (counts only, never audio): logged when the stream ends.
+	framesFromCall  atomic.Uint64 // decoded peer frames delivered by the call (inbound)
+	framesIntoCall  atomic.Uint64 // consumer frames handed to the call's send loop (outbound)
+	silenceTicks    atomic.Uint64 // send-loop ticks with no consumer audio (silence sent)
+	samplesFromUser atomic.Uint64 // consumer samples received over the socket
+}
+
+// Stats is a count-only snapshot of the stream for diagnostics.
+type Stats struct {
+	FramesFromCall, FramesIntoCall, SilenceTicks, SamplesFromUser, DroppedToUser, DroppedFromUser uint64
+}
+
+func (b *bridge) stats() Stats {
+	return Stats{
+		FramesFromCall:  b.framesFromCall.Load(),
+		FramesIntoCall:  b.framesIntoCall.Load(),
+		SilenceTicks:    b.silenceTicks.Load(),
+		SamplesFromUser: b.samplesFromUser.Load(),
+		DroppedToUser:   b.droppedOut.Load(),
+		DroppedFromUser: b.droppedIn.Load(),
+	}
 }
 
 func newBridge(callID string) *bridge {
@@ -125,6 +147,7 @@ func (b *bridge) WriteFrame(frame []float32) error {
 	if b.closed() {
 		return nil
 	}
+	b.framesFromCall.Add(1)
 	b.enqueue(Message{Event: "media", Track: "inbound", Payload: base64.StdEncoding.EncodeToString(pcm16FromFloat32(frame))})
 	return nil
 }
@@ -157,14 +180,17 @@ func (b *bridge) ReadFrame() ([]float32, error) {
 	avail := len(b.pending) - b.head
 	if avail == 0 {
 		b.starved = false
+		b.silenceTicks.Add(1)
 		return nil, nil
 	}
 	if avail < meowcaller.FrameSamples && !b.starved {
 		// Give the consumer one more tick to complete the frame before
 		// flushing the tail padded with silence.
 		b.starved = true
+		b.silenceTicks.Add(1)
 		return nil, nil
 	}
+	b.framesIntoCall.Add(1)
 	b.starved = false
 	n := avail
 	if n > meowcaller.FrameSamples {
@@ -188,6 +214,7 @@ func (b *bridge) ReadFrame() ([]float32, error) {
 func (b *bridge) pushOutbound(samples []int16) {
 	b.audioMu.Lock()
 	defer b.audioMu.Unlock()
+	b.samplesFromUser.Add(uint64(len(samples)))
 	room := maxBufferedSamples - (len(b.pending) - b.head)
 	if room <= 0 {
 		b.droppedIn.Add(uint64(len(samples)))

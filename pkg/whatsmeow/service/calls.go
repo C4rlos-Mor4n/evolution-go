@@ -46,7 +46,9 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 		return func() {}
 	}
 	registry := w.callRegistry
-	mc := meowcaller.NewClient(client) // no WithLogger: the library stays silent (it can log key material at debug)
+	// Sanitized logger (identifiers stripped, warn by default, never debug): without it
+	// meowcaller's setup/media errors were invisible.
+	mc := meowcaller.NewClient(client, meowcaller.WithLogger(meowcallerLogger(w.config.CallsLogLevel)))
 	owner := mc
 	registry.OpenOwner(owner)
 
@@ -80,6 +82,15 @@ func (w whatsmeowService) attachCalling(instanceID string, client *whatsmeow.Cli
 			return
 		}
 		w.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] incoming call %s registered (video=%v)", instanceID, callID, call.IsVideo())
+		// Lifecycle diagnostics (phases only, no identifiers/media): shows whether an
+		// answered call ever reached "active" (media flowing) or stalled in "connecting".
+		started := time.Now()
+		call.OnStateChange(func(p meowcaller.CallPhase) {
+			w.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] call %s phase=%s after=%s", instanceID, callID, callPhaseName(p), time.Since(started).Round(time.Millisecond))
+		})
+		call.OnReady(func() {
+			w.loggerWrapper.GetLogger(instanceID).LogInfo("[%s] call %s media ready after=%s", instanceID, callID, time.Since(started).Round(time.Millisecond))
+		})
 	})
 
 	var once sync.Once
@@ -173,4 +184,25 @@ func RunCallJanitor(ctx context.Context, registry *CallRegistry, interval time.D
 			}
 		}
 	}
+}
+
+// callPhaseName renders a meowcaller call phase for logs.
+func callPhaseName(p meowcaller.CallPhase) string {
+	switch p {
+	case meowcaller.CallPhaseIdle:
+		return "idle"
+	case meowcaller.CallPhaseCalling:
+		return "calling"
+	case meowcaller.CallPhaseRinging:
+		return "ringing"
+	case meowcaller.CallPhaseConnecting:
+		return "connecting"
+	case meowcaller.CallPhaseActive:
+		return "active"
+	case meowcaller.CallPhaseEnded:
+		return "ended"
+	case meowcaller.CallPhaseWaitingRoom:
+		return "waiting_room"
+	}
+	return "unknown"
 }

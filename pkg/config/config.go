@@ -33,7 +33,10 @@ type Config struct {
 	RerequestFromPhone   bool
 	// CallsEnabled turns on answering/streaming WhatsApp calls through the
 	// unofficial meowcaller library (CALLS_ENABLED, default false).
-	CallsEnabled         bool
+	CallsEnabled bool
+	// CallsLogLevel is the level of the sanitized meowcaller log (CALLS_LOG_LEVEL:
+	// error | warn (default) | info).
+	CallsLogLevel        string
 	OsName               string
 	AmqpUrl              string
 	AmqpGlobalEnabled    bool
@@ -403,6 +406,7 @@ func Load() *Config {
 		CheckUserExists:      checkUserExists != "false", // Default true, set to false to disable
 		RerequestFromPhone:   rerequestFromPhone == "true",
 		CallsEnabled:         callsEnabled == "true",
+		CallsLogLevel:        os.Getenv(config_env.CALLS_LOG_LEVEL),
 		AmqpGlobalEvents:     amqpGlobalEvents,
 		AmqpSpecificEvents:   amqpSpecificEvents,
 		NatsUrl:              natsUrl,

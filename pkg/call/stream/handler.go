@@ -104,7 +104,7 @@ func (s *Server) Serve(ctx *gin.Context) {
 		return
 	}
 	b.conn = conn
-	logger.LogInfo("[%s] call stream attached callId=%s", instance.Id, callID)
+	logger.LogInfo("[%s] call stream attached callId=%s callState=%s", instance.Id, callID, phaseName(call.State()))
 
 	go b.writeLoop()
 	b.enqueue(Message{
@@ -124,6 +124,11 @@ func (s *Server) Serve(ctx *gin.Context) {
 	b.closeWith(reasonConsumerClosed)
 	<-b.writerDone
 	reason, _ := b.reason.Load().(string)
+	st := b.stats()
+	// Count-only summary: with no inbound frames the call never delivered media
+	// (e.g. it was never accepted on the peer side or the relay never came up).
+	logger.LogInfo("[%s] call stream ended callId=%s reason=%s callState=%s framesFromCall=%d framesIntoCall=%d silenceTicks=%d samplesFromConsumer=%d droppedToConsumer=%d droppedFromConsumer=%d",
+		instance.Id, callID, reason, phaseName(call.State()), st.FramesFromCall, st.FramesIntoCall, st.SilenceTicks, st.SamplesFromUser, st.DroppedToUser, st.DroppedFromUser)
 
 	// Detach before hanging up so the media goroutines stop touching the bridge.
 	call.Receive(nil)
@@ -143,4 +148,25 @@ func (s *Server) Serve(ctx *gin.Context) {
 	}
 	logger.LogInfo("[%s] call stream closed callId=%s reason=%s droppedOut=%d droppedIn=%d",
 		instance.Id, callID, reason, b.droppedOut.Load(), b.droppedIn.Load())
+}
+
+// phaseName renders a meowcaller call phase for logs.
+func phaseName(p meowcaller.CallPhase) string {
+	switch p {
+	case meowcaller.CallPhaseIdle:
+		return "idle"
+	case meowcaller.CallPhaseCalling:
+		return "calling"
+	case meowcaller.CallPhaseRinging:
+		return "ringing"
+	case meowcaller.CallPhaseConnecting:
+		return "connecting"
+	case meowcaller.CallPhaseActive:
+		return "active"
+	case meowcaller.CallPhaseEnded:
+		return "ended"
+	case meowcaller.CallPhaseWaitingRoom:
+		return "waiting_room"
+	}
+	return "unknown"
 }
